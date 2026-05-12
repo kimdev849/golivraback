@@ -1,6 +1,7 @@
 const { sendSms } = require('../services/twilio.service');
 const { getDb } = require('../config/db');
 const { requireFields, createHttpError } = require('../utils/http');
+const { normalizeCgE164 } = require('../utils/phone');
 
 function buildOtpCode() {
   return Math.floor(100000 + Math.random() * 900000).toString();
@@ -12,8 +13,16 @@ function isOtpTestModeEnabled() {
 
 async function requestOtp(req, res, next) {
   try {
-    const { telephone } = req.body;
+    const { telephone: telephoneRaw } = req.body;
     requireFields(req.body, ['telephone']);
+
+    const telephone = normalizeCgE164(telephoneRaw);
+    if (!telephone) {
+      throw createHttpError(
+        400,
+        'Numéro de téléphone invalide. Indiquez +242 suivi de 9 chiffres (Congo).',
+      );
+    }
 
     const code = buildOtpCode();
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
@@ -40,7 +49,10 @@ async function requestOtp(req, res, next) {
     }
 
     try {
-      await sendSms(telephone, `Your Golivra OTP code is ${code}`);
+      await sendSms(
+        telephone,
+        `GoLivra : votre code de vérification est ${code}. Valide 5 minutes.`,
+      );
     } catch (smsError) {
       // Ne pas laisser un OTP "fantôme" en base si le SMS n'est pas parti.
       try {
@@ -70,8 +82,16 @@ async function requestOtp(req, res, next) {
 
 async function verifyOtp(req, res, next) {
   try {
-    const { telephone, code } = req.body;
+    const { telephone: telephoneRaw, code } = req.body;
     requireFields(req.body, ['telephone', 'code']);
+
+    const telephone = normalizeCgE164(telephoneRaw);
+    if (!telephone) {
+      throw createHttpError(
+        400,
+        'Numéro de téléphone invalide. Indiquez +242 suivi de 9 chiffres (Congo).',
+      );
+    }
 
     const db = getDb();
     const { data: otpRow, error } = await db

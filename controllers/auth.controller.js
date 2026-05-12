@@ -2,6 +2,7 @@ const { getDb } = require('../config/db');
 const bcrypt = require('bcryptjs');
 const { createHttpError, requireFields } = require('../utils/http');
 const { generateToken } = require('../utils/token');
+const { normalizeCgE164 } = require('../utils/phone');
 
 const PUBLIC_REGISTER_ROLES = new Set(['client', 'vendeur']);
 
@@ -36,8 +37,13 @@ async function register(req, res, next) {
   try {
     const rawRole = req.body.role;
     const role = typeof rawRole === 'string' && rawRole.trim() ? rawRole.trim() : 'client';
-    const { nom, telephone, motDePasse, otpCode, imageUrl } = req.body;
+    const { nom, telephone: telephoneRaw, motDePasse, otpCode, imageUrl } = req.body;
     requireFields(req.body, ['nom', 'telephone', 'motDePasse', 'otpCode']);
+
+    const telephone = normalizeCgE164(telephoneRaw);
+    if (!telephone) {
+      throw createHttpError(400, 'Numéro de téléphone invalide. Indiquez +242 suivi de 9 chiffres (Congo).');
+    }
 
     const db = getDb();
     if (!PUBLIC_REGISTER_ROLES.has(role)) {
@@ -105,8 +111,13 @@ async function register(req, res, next) {
 
 async function login(req, res, next) {
   try {
-    const { telephone, motDePasse } = req.body;
+    const { telephone: telephoneRaw, motDePasse } = req.body;
     requireFields(req.body, ['telephone', 'motDePasse']);
+
+    const telephone = normalizeCgE164(telephoneRaw);
+    if (!telephone) {
+      throw createHttpError(400, 'Numéro de téléphone invalide. Indiquez +242 suivi de 9 chiffres (Congo).');
+    }
 
     const db = getDb();
 
@@ -187,16 +198,6 @@ async function logout(req, res, next) {
   }
 }
 
-/** Normalise un numéro Congo (+242 + 9 chiffres nationaux). */
-function normalizeCgTelephone(raw) {
-  const digits = String(raw ?? '').replace(/\D/g, '');
-  const national = digits.startsWith('242') ? digits.slice(3, 12) : digits.slice(0, 9);
-  if (national.length !== 9) {
-    throw createHttpError(400, 'Numéro de téléphone invalide.');
-  }
-  return `+242${national}`;
-}
-
 async function updateProfile(req, res, next) {
   try {
     const { nom, telephone } = req.body;
@@ -217,7 +218,10 @@ async function updateProfile(req, res, next) {
     }
 
     if (hasTel) {
-      const normalized = normalizeCgTelephone(telephone);
+      const normalized = normalizeCgE164(telephone);
+      if (!normalized) {
+        throw createHttpError(400, 'Numéro de téléphone invalide. Indiquez +242 suivi de 9 chiffres (Congo).');
+      }
       const { data: other } = await db
         .from('utilisateurs')
         .select('id')
