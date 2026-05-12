@@ -36,7 +36,7 @@ async function register(req, res, next) {
   try {
     const rawRole = req.body.role;
     const role = typeof rawRole === 'string' && rawRole.trim() ? rawRole.trim() : 'client';
-    const { nom, telephone, motDePasse, otpCode } = req.body;
+    const { nom, telephone, motDePasse, otpCode, imageUrl } = req.body;
     requireFields(req.body, ['nom', 'telephone', 'motDePasse', 'otpCode']);
 
     const db = getDb();
@@ -63,8 +63,9 @@ async function register(req, res, next) {
         telephone,
         mot_de_passe: hashedPassword,
         role_id: roleRow.id,
+        image_url: typeof imageUrl === 'string' && imageUrl.trim() ? imageUrl.trim() : null,
       })
-      .select('id, nom, telephone, role_id, cree_le')
+      .select('id, nom, telephone, role_id, image_url, cree_le')
       .single();
 
     if (error) {
@@ -93,6 +94,7 @@ async function register(req, res, next) {
         id: data.id,
         nom: data.nom,
         telephone: data.telephone,
+        imageUrl: data.image_url ?? null,
         roleId: data.role_id,
       },
     });
@@ -110,7 +112,7 @@ async function login(req, res, next) {
 
     const { data: user, error } = await db
       .from('utilisateurs')
-      .select('id, nom, telephone, mot_de_passe, role_id')
+      .select('id, nom, telephone, image_url, mot_de_passe, role_id')
       .eq('telephone', telephone)
       .single();
 
@@ -147,6 +149,7 @@ async function login(req, res, next) {
         id: user.id,
         nom: user.nom,
         telephone: user.telephone,
+        imageUrl: user.image_url ?? null,
         roleId: user.role_id,
       },
     });
@@ -160,12 +163,15 @@ async function me(req, res, next) {
     const db = getDb();
     const { data: user, error } = await db
       .from('utilisateurs')
-      .select('id, nom, telephone, role_id, cree_le')
+      .select('id, nom, telephone, role_id, image_url, cree_le')
       .eq('id', req.auth.userId)
       .single();
 
     if (error || !user) throw createHttpError(404, 'Utilisateur introuvable');
-    return res.json(user);
+    return res.json({
+      ...user,
+      imageUrl: user.image_url ?? null,
+    });
   } catch (error) {
     return next(error);
   }
@@ -181,4 +187,103 @@ async function logout(req, res, next) {
   }
 }
 
-module.exports = { register, login, me, logout };
+/** Normalise un numéro Congo (+242 + 9 chiffres nationaux). */
+function normalizeCgTelephone(raw) {
+  const digits = String(raw ?? '').replace(/\D/g, '');
+  const national = digits.startsWith('242') ? digits.slice(3, 12) : digits.slice(0, 9);
+  if (national.length !== 9) {
+    throw createHttpError(400, 'Numéro de téléphone invalide.');
+  }
+  return `+242${national}`;
+}
+
+async function updateProfile(req, res, next) {
+  try {
+    const { nom, telephone } = req.body;
+    const hasNom = nom !== undefined;
+    const hasTel = telephone !== undefined;
+    if (!hasNom && !hasTel) {
+      throw createHttpError(400, 'Indiquez au moins le nom ou le numéro à modifier.');
+    }
+
+    const db = getDb();
+    const updates = {};
+
+    if (hasNom) {
+      const n = typeof nom === 'string' ? nom.trim() : '';
+      if (!n) throw createHttpError(400, 'Le nom ne peut pas être vide.');
+      if (n.length > 100) throw createHttpError(400, 'Nom trop long.');
+      updates.nom = n;
+    }
+
+    if (hasTel) {
+      const normalized = normalizeCgTelephone(telephone);
+      const { data: other } = await db
+        .from('utilisateurs')
+        .select('id')
+        .eq('telephone', normalized)
+        .neq('id', req.auth.userId)
+        .maybeSingle();
+      if (other) throw createHttpError(409, 'Ce numéro de téléphone est déjà utilisé.');
+      updates.telephone = normalized;
+    }
+
+    const { data: user, error } = await db
+      .from('utilisateurs')
+      .update(updates)
+      .eq('id', req.auth.userId)
+      .select('id, nom, telephone, role_id, image_url, cree_le')
+      .single();
+
+    if (error || !user) throw createHttpError(500, 'Impossible de mettre à jour le profil.');
+    return res.json({
+      ...user,
+      imageUrl: user.image_url ?? null,
+    });
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function changePassword(req, res, next) {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    requireFields(req.body, ['currentPassword', 'newPassword']);
+
+    if (typeof newPassword !== 'string' || newPassword.length < 6) {
+      throw createHttpError(400, 'Le nouveau mot de passe doit contenir au moins 6 caractères.');
+    }
+
+    const db = getDb();
+    const { data: user, error } = await db
+      .from('utilisateurs')
+      .select('id, mot_de_passe')
+      .eq('id', req.auth.userId)
+      .single();
+
+    if (error || !user) throw createHttpError(404, 'Utilisateur introuvable');
+
+    const isBcryptHash =
+      user.mot_de_passe.startsWith('$2a$') || user.mot_de_passe.startsWith('$2b$');
+    const passwordValid = isBcryptHash
+      ? await bcrypt.compare(currentPassword, user.mot_de_passe)
+      : user.mot_de_passe === currentPassword;
+
+    if (!passwordValid) {
+      throw createHttpError(401, 'Mot de passe actuel incorrect.');
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    const { error: upErr } = await db
+      .from('utilisateurs')
+      .update({ mot_de_passe: hashedPassword })
+      .eq('id', user.id);
+
+    if (upErr) throw upErr;
+    return res.json({ message: 'Mot de passe mis à jour.' });
+  } catch (error) {
+    return next(error);
+  }
+}
+
+module.exports = { register, login, me, logout, updateProfile, changePassword };
