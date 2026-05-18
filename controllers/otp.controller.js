@@ -44,9 +44,18 @@ async function requestOtp(req, res, next) {
 
     const { error } = await insertOtp(db, { telephone, code, expiresAt });
     if (error) {
+      const detail = String(error.message || '');
+      if (detail.toLowerCase().includes('permission denied')) {
+        throw createHttpError(
+          503,
+          'Accès Supabase refusé (permission denied). Sur Render, remplacez SUPABASE_SECRET_KEY par la clé SECRÈTE ' +
+            '(sb_secret_… ou service_role), pas la clé publishable (sb_publishable_…). ' +
+            'Exécutez aussi sql/fix-supabase-permissions.sql dans Supabase.',
+        );
+      }
       throw createHttpError(
         500,
-        `Impossible de générer le code de vérification. Vérifiez la table ${otpTableHint()} sur Supabase (détail: ${error.message}).`,
+        `Impossible de générer le code de vérification. Vérifiez la table ${otpTableHint()} sur Supabase (détail: ${detail}).`,
       );
     }
 

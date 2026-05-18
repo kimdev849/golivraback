@@ -30,7 +30,7 @@ Santé de l’API : `GET http://localhost:3000/health`
 | `PORT` | Port d’écoute (défaut : `3000`) |
 | `NODE_ENV` | `development` ou `production` |
 | `SUPABASE_URL` | URL du projet Supabase |
-| `SUPABASE_SECRET_KEY` | Clé **secrète** serveur (`sb_secret_...` ou JWT **service_role**). Jamais côté client. |
+| `SUPABASE_SECRET_KEY` | Clé **secrète serveur** : `sb_secret_…` ou JWT **service_role**. **Jamais** `sb_publishable_…` (sinon : *permission denied for schema public*). |
 | `SUPABASE_SERVICE_KEY` | (Optionnel) Alias historique de `SUPABASE_SECRET_KEY` si votre hébergeur utilise encore ce nom. |
 | `TWILIO_ACCOUNT_SID` | SID Twilio |
 | `TWILIO_AUTH_TOKEN` | Token Twilio |
