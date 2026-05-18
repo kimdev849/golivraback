@@ -213,8 +213,26 @@ async function ensureBaseRoles() {
         nom: roleName,
         description: roleName,
       });
-      if (insErr) console.warn(`[golivra] Impossible d'insérer le rôle ${roleName}:`, insErr.message);
+      if (insErr) {
+        console.warn(`[golivra] Impossible d'insérer le rôle ${roleName}:`, insErr.message);
+        if (roleName === 'gestionnaire_logistique' && /enum|invalid input value/i.test(insErr.message || '')) {
+          console.error(
+            '[golivra] Migration v4 requise : exécutez sql/amendments-v4-logistics-tenant.sql (étape 1 seule) dans Supabase SQL Editor, puis amendments-v4-logistics-tenant-step2.sql.',
+          );
+        }
+      }
     }
+  }
+
+  const { data: gestRole } = await db
+    .from('roles')
+    .select('id')
+    .eq('nom', 'gestionnaire_logistique')
+    .maybeSingle();
+  if (!gestRole) {
+    console.error(
+      '[golivra] Rôle gestionnaire_logistique manquant — création d\'entreprise de livraison impossible tant que la migration v4 n\'est pas appliquée (voir sql/amendments-v4-logistics-tenant.sql).',
+    );
   }
 }
 

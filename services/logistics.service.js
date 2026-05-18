@@ -15,7 +15,12 @@ function normalizeEmail(raw) {
 async function getRoleId(db, roleName) {
   const { data, error } = await db.from('roles').select('id').eq('nom', roleName).maybeSingle();
   if (error) throw error;
-  if (!data) throw createHttpError(500, `Rôle « ${roleName} » introuvable. Exécutez la migration SQL v4.`);
+  if (!data) {
+    throw createHttpError(
+      503,
+      `Rôle « ${roleName} » absent en base. Dans Supabase → SQL Editor : exécutez d'abord sql/amendments-v4-logistics-tenant.sql (étape 1), puis sql/amendments-v4-logistics-tenant-step2.sql (étape 2).`,
+    );
+  }
   return data.id;
 }
 

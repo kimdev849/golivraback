@@ -10,6 +10,24 @@ INSERT INTO roles (nom, description) VALUES
   )
 ON CONFLICT (nom) DO NOTHING;
 
+-- Met à jour la fonction appelée au démarrage du backend (ensureBaseRoles)
+CREATE OR REPLACE FUNCTION ensure_base_roles()
+RETURNS VOID AS $$
+BEGIN
+  INSERT INTO roles (nom, description) VALUES
+    ('client',       'Utilisateur final'),
+    ('restaurateur', 'Propriétaire de restaurant'),
+    ('commercant',   'Propriétaire de boutique'),
+    ('admin',        'Administrateur GoLivra'),
+    ('livreur',      'Agent de livraison'),
+    (
+      'gestionnaire_logistique',
+      'Gestionnaire d''une entreprise logistique — crée et supervise ses livreurs'
+    )
+  ON CONFLICT (nom) DO NOTHING;
+END;
+$$ LANGUAGE plpgsql;
+
 -- Canal d'identité : email obligatoire pour admin et gestionnaire logistique
 CREATE OR REPLACE FUNCTION trg_validate_utilisateur_identite()
 RETURNS TRIGGER AS $$
