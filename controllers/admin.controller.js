@@ -647,6 +647,73 @@ async function getLogisticsCompanyAdmin(req, res, next) {
   }
 }
 
+async function createLogisticsCompany(req, res, next) {
+  try {
+    const { nomEntreprise, telephoneEntreprise, emailEntreprise, zoneActivite, gestionnaire } = req.body || {};
+    requireFields(req.body, ['nomEntreprise', 'gestionnaire']);
+    requireFields(gestionnaire, ['nom', 'email', 'motDePasse']);
+
+    const db = getDb();
+    const { company, gestionnaire: gest } = await createLogisticsCompanyWithManager(db, {
+      nomEntreprise,
+      telephoneEntreprise,
+      emailEntreprise,
+      zoneActivite,
+      gestionnaire,
+      statut: 'active',
+    });
+
+    return res.status(201).json(mapLogisticsAdmin(company, gest, 0));
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function createLogisticsCourier(req, res, next) {
+  try {
+    const { companyId } = req.params;
+    const { nom, telephone, motDePasse, typeVehicule, plaqueImmatriculation } = req.body || {};
+    requireFields(req.body, ['nom', 'telephone', 'motDePasse', 'typeVehicule']);
+
+    const db = getDb();
+    await assertCompanyAccess(db, { userId: req.auth.userId, role: req.auth.role, companyId });
+    const livreur = await createCourierForCompany(db, companyId, {
+      nom,
+      telephone,
+      motDePasse,
+      typeVehicule,
+      plaqueImmatriculation,
+    });
+    return res.status(201).json(livreur);
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function suspendLogisticsCourier(req, res, next) {
+  try {
+    const { companyId, livreurId } = req.params;
+    const db = getDb();
+    await assertCompanyAccess(db, { userId: req.auth.userId, role: req.auth.role, companyId });
+    const row = await suspendCourier(db, livreurId, companyId);
+    return res.json(mapCourierPublic(row));
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function activateLogisticsCourier(req, res, next) {
+  try {
+    const { companyId, livreurId } = req.params;
+    const db = getDb();
+    await assertCompanyAccess(db, { userId: req.auth.userId, role: req.auth.role, companyId });
+    const row = await activateCourier(db, livreurId, companyId);
+    return res.json(mapCourierPublic(row));
+  } catch (error) {
+    return next(error);
+  }
+}
+
 async function updateLogisticsStatus(req, res, next) {
   try {
     const { companyId } = req.params;
