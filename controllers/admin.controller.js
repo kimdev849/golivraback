@@ -1,5 +1,14 @@
 const { getDb } = require('../config/db');
 const { requireFields, createHttpError } = require('../utils/http');
+const {
+  createLogisticsCompanyWithManager,
+  listCouriersForCompany,
+  createCourierForCompany,
+  suspendCourier,
+  activateCourier,
+  assertCompanyAccess,
+  mapCourierPublic,
+} = require('../services/logistics.service');
 
 async function createCourier(req, res, next) {
   try {
@@ -841,6 +850,10 @@ module.exports = {
   getAdminOrderDetail,
   listLogisticsCompanies,
   getLogisticsCompanyAdmin,
+  createLogisticsCompany,
+  createLogisticsCourier,
+  suspendLogisticsCourier,
+  activateLogisticsCourier,
   updateLogisticsStatus,
   listAdminDeliveries,
   listAdminCouriers,

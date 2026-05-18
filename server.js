@@ -11,6 +11,7 @@ const deliveryRoutes = require('./routes/delivery.routes');
 const enterpriseRoutes = require('./routes/enterprise.routes');
 const productRoutes = require('./routes/product.routes');
 const adminRoutes = require('./routes/admin.routes');
+const logisticsRoutes = require('./routes/logistics.routes');
 const uploadRoutes = require('./routes/upload.routes');
 const { getDb } = require('./config/db');
 
@@ -100,6 +101,7 @@ app.use('/api/delivery', deliveryRoutes);
 app.use('/api/enterprises', enterpriseRoutes);
 app.use('/api/products', productRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/logistics', logisticsRoutes);
 app.use('/api/uploads', uploadRoutes);
 
 function httpErrorCode(status, err) {
@@ -196,7 +198,14 @@ async function ensureBaseRoles() {
     console.warn('[golivra] RPC ensure_base_roles exception :', e.message);
   }
 
-  const requiredRoles = ['client', 'restaurateur', 'commercant', 'admin', 'livreur'];
+  const requiredRoles = [
+    'client',
+    'restaurateur',
+    'commercant',
+    'admin',
+    'livreur',
+    'gestionnaire_logistique',
+  ];
   for (const roleName of requiredRoles) {
     const { data } = await db.from('roles').select('id').eq('nom', roleName).maybeSingle();
     if (!data) {

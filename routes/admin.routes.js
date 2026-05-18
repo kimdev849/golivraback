@@ -15,6 +15,10 @@ const {
   getAdminOrderDetail,
   listLogisticsCompanies,
   getLogisticsCompanyAdmin,
+  createLogisticsCompany,
+  createLogisticsCourier,
+  suspendLogisticsCourier,
+  activateLogisticsCourier,
   updateLogisticsStatus,
   listAdminDeliveries,
   listAdminCouriers,
@@ -47,8 +51,12 @@ router.get('/orders', ...adminOnly, listAdminOrders);
 router.get('/orders/:orderId', ...adminOnly, getAdminOrderDetail);
 
 router.get('/logistics', ...adminOnly, listLogisticsCompanies);
+router.post('/logistics', ...adminOnly, createLogisticsCompany);
 router.get('/logistics/:companyId', ...adminOnly, getLogisticsCompanyAdmin);
 router.patch('/logistics/:companyId/status', ...adminOnly, updateLogisticsStatus);
+router.post('/logistics/:companyId/livreurs', ...adminOnly, createLogisticsCourier);
+router.patch('/logistics/:companyId/livreurs/:livreurId/suspend', ...adminOnly, suspendLogisticsCourier);
+router.patch('/logistics/:companyId/livreurs/:livreurId/activate', ...adminOnly, activateLogisticsCourier);
 
 router.get('/deliveries', ...adminOnly, listAdminDeliveries);
 router.patch('/deliveries/:deliveryId/assign', ...adminOnly, assignDeliveryCourier);

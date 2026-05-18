@@ -6,7 +6,7 @@ const { normalizeCgE164 } = require('../utils/phone');
 const { findPendingOtp, deleteOtpById } = require('../services/otp.store');
 
 const PUBLIC_REGISTER_ROLES = new Set(['client', 'restaurateur', 'commercant']);
-const STAFF_LOGIN_ROLES = new Set(['admin']);
+const STAFF_LOGIN_ROLES = new Set(['admin', 'gestionnaire_logistique']);
 
 async function findValidOtpRow(db, telephone, code) {
   const { data: otpRow, error } = await findPendingOtp(db, telephone, code);
@@ -59,6 +59,12 @@ async function verifyPasswordAndMaybeUpgrade(db, user, motDePasse) {
   return true;
 }
 
+function userImageUrl(user) {
+  return user?.avatar_url && String(user.avatar_url).trim().startsWith('http')
+    ? String(user.avatar_url).trim()
+    : null;
+}
+
 async function buildSessionResponse(db, user, req) {
   const token = generateToken();
   const { sessionError, expireDate } = await insertSession(db, user.id, token, req);
@@ -76,7 +82,7 @@ async function buildSessionResponse(db, user, req) {
       nom: user.nom,
       telephone: user.telephone ?? null,
       email: user.email ?? null,
-      imageUrl: null,
+      imageUrl: userImageUrl(user),
       roleId: user.role_id,
       role: roleNomRow?.nom ?? null,
       est_approuve: user.est_approuve,
@@ -88,8 +94,10 @@ async function register(req, res, next) {
   try {
     const rawRole = req.body.role;
     const role = typeof rawRole === 'string' && rawRole.trim() ? rawRole.trim() : 'client';
-    const { nom, telephone: telephoneRaw, motDePasse, otpCode } = req.body;
+    const { nom, telephone: telephoneRaw, motDePasse, otpCode, imageUrl } = req.body;
     requireFields(req.body, ['nom', 'telephone', 'motDePasse', 'otpCode']);
+    const avatarUrl =
+      typeof imageUrl === 'string' && imageUrl.trim().startsWith('http') ? imageUrl.trim() : null;
 
     const telephone = normalizeCgE164(telephoneRaw);
     if (!telephone) {
@@ -121,8 +129,9 @@ async function register(req, res, next) {
         role_id: roleRow.id,
         est_verifie: true,
         est_approuve: role === 'client',
+        avatar_url: avatarUrl,
       })
-      .select('id, nom, telephone, role_id, est_approuve, created_at')
+      .select('id, nom, telephone, email, role_id, est_approuve, avatar_url, created_at')
       .single();
 
     if (error) {
@@ -148,7 +157,7 @@ async function register(req, res, next) {
         id: data.id,
         nom: data.nom,
         telephone: data.telephone,
-        imageUrl: null,
+        imageUrl: userImageUrl(data),
         roleId: data.role_id,
         role: roleNomRow?.nom ?? null,
         est_approuve: data.est_approuve,
@@ -184,7 +193,7 @@ async function login(req, res, next) {
 
     const { data: user, error } = await db
       .from('utilisateurs')
-      .select('id, nom, telephone, email, mot_de_passe_hash, role_id, est_approuve, est_actif')
+      .select('id, nom, telephone, email, mot_de_passe_hash, role_id, est_approuve, est_actif, avatar_url')
       .eq('telephone', telephone)
       .single();
 
@@ -226,7 +235,7 @@ async function staffLogin(req, res, next) {
 
     const { data: user, error } = await db
       .from('utilisateurs')
-      .select('id, nom, telephone, email, mot_de_passe_hash, role_id, est_approuve, est_actif')
+      .select('id, nom, telephone, email, mot_de_passe_hash, role_id, est_approuve, est_actif, avatar_url')
       .eq('email', email)
       .maybeSingle();
 
@@ -239,7 +248,7 @@ async function staffLogin(req, res, next) {
     const roleNom = roleRow?.nom ?? null;
 
     if (!STAFF_LOGIN_ROLES.has(roleNom)) {
-      throw createHttpError(403, 'Accès réservé aux administrateurs GoLivra.');
+      throw createHttpError(403, 'Accès réservé au personnel GoLivra (admin ou gestionnaire logistique).');
     }
 
     if (user.est_actif === false) {
@@ -262,7 +271,7 @@ async function me(req, res, next) {
     const db = getDb();
     const { data: user, error } = await db
       .from('utilisateurs')
-      .select('id, nom, telephone, email, role_id, est_approuve, created_at')
+      .select('id, nom, telephone, email, role_id, est_approuve, avatar_url, created_at')
       .eq('id', req.auth.userId)
       .single();
 
@@ -281,7 +290,8 @@ async function me(req, res, next) {
       role: roleNom,
       est_approuve: user.est_approuve,
       created_at: user.created_at,
-      imageUrl: null,
+      imageUrl: userImageUrl(user),
+      image_url: userImageUrl(user),
     });
   } catch (error) {
     return next(error);
@@ -300,11 +310,12 @@ async function logout(req, res, next) {
 
 async function updateProfile(req, res, next) {
   try {
-    const { nom, telephone } = req.body;
+    const { nom, telephone, imageUrl } = req.body;
     const hasNom = nom !== undefined;
     const hasTel = telephone !== undefined;
-    if (!hasNom && !hasTel) {
-      throw createHttpError(400, 'Indiquez au moins le nom ou le numéro à modifier.');
+    const hasImage = imageUrl !== undefined;
+    if (!hasNom && !hasTel && !hasImage) {
+      throw createHttpError(400, 'Indiquez au moins le nom, le numéro ou la photo à modifier.');
     }
 
     const db = getDb();
@@ -332,11 +343,16 @@ async function updateProfile(req, res, next) {
       updates.telephone = normalized;
     }
 
+    if (hasImage) {
+      updates.avatar_url =
+        typeof imageUrl === 'string' && imageUrl.trim().startsWith('http') ? imageUrl.trim() : null;
+    }
+
     const { data: user, error } = await db
       .from('utilisateurs')
       .update(updates)
       .eq('id', req.auth.userId)
-      .select('id, nom, telephone, email, role_id, est_approuve, created_at')
+      .select('id, nom, telephone, email, role_id, est_approuve, avatar_url, created_at')
       .single();
 
     if (error || !user) throw createHttpError(500, 'Impossible de mettre à jour le profil.');
@@ -353,7 +369,8 @@ async function updateProfile(req, res, next) {
       role: roleRow?.nom ?? null,
       est_approuve: user.est_approuve,
       created_at: user.created_at,
-      imageUrl: null,
+      imageUrl: userImageUrl(user),
+      image_url: userImageUrl(user),
     });
   } catch (error) {
     return next(error);
