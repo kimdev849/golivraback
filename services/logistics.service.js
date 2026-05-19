@@ -590,13 +590,9 @@ async function getDelaysForCompany(db, companyId) {
   };
 }
 
-async function assignDeliveryForLogisticsCompany(db, companyId, deliveryId, livreurId) {
+/** Relance l'attribution automatique GoLivra (sans choix manuel du livreur). */
+async function retryAutoDispatchForCompany(db, companyId, deliveryId) {
   const courierIds = await getCourierIdsForCompany(db, companyId);
-  if (!courierIds.includes(livreurId)) {
-    throw createHttpError(403, 'Ce livreur n\'appartient pas à votre entreprise.');
-  }
-
-  await getLivreurInCompany(db, livreurId, companyId);
 
   const { data: delivery, error: delErr } = await db
     .from('livraisons')
@@ -607,26 +603,12 @@ async function assignDeliveryForLogisticsCompany(db, companyId, deliveryId, livr
   if (!delivery) throw createHttpError(404, 'Livraison introuvable.');
 
   if (delivery.livreur_id && !courierIds.includes(delivery.livreur_id)) {
-    throw createHttpError(403, 'Cette livraison est déjà attribuée à un autre transporteur.');
+    throw createHttpError(403, 'Cette course est suivie par un autre réseau de livreurs.');
   }
 
-  if (delivery.statut === 'livree' || delivery.statut === 'annulee') {
-    throw createHttpError(400, 'Cette livraison ne peut plus être modifiée.');
-  }
-
-  const { data, error } = await db
-    .from('livraisons')
-    .update({
-      livreur_id: livreurId,
-      statut: 'en_route',
-      attribuee_at: new Date().toISOString(),
-    })
-    .eq('id', deliveryId)
-    .select('*')
-    .single();
-  if (error || !data) throw createHttpError(404, 'Livraison introuvable.');
-
-  return mapDeliveryRow(db, data);
+  const { autoAssignLivreur } = require('./dispatch.service');
+  const updated = await autoAssignLivreur(db, deliveryId);
+  return mapDeliveryRow(db, updated);
 }
 
 module.exports = {
@@ -648,7 +630,7 @@ module.exports = {
   getCourierDetailForCompany,
   mapCourierPublic,
   listDeliveriesForLogisticsCompany,
-  assignDeliveryForLogisticsCompany,
+  retryAutoDispatchForCompany,
   getLogisticsStatsForCompany,
   getOperationsForCompany,
   getDelaysForCompany,

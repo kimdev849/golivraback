@@ -11,7 +11,7 @@ const {
   getCourierDetailForCompany,
   mapCourierPublic,
   listDeliveriesForLogisticsCompany,
-  assignDeliveryForLogisticsCompany,
+  retryAutoDispatchForCompany,
   getLogisticsStatsForCompany,
   getOperationsForCompany,
   getDelaysForCompany,
@@ -179,15 +179,12 @@ async function listMyDeliveries(req, res, next) {
   }
 }
 
-async function assignMyDelivery(req, res, next) {
+async function retryMyDeliveryDispatch(req, res, next) {
   try {
     const company = req.logisticsCompany;
     const { deliveryId } = req.params;
-    const { livreurId } = req.body || {};
-    requireFields(req.body, ['livreurId']);
-
     const db = getDb();
-    const row = await assignDeliveryForLogisticsCompany(db, company.id, deliveryId, livreurId);
+    const row = await retryAutoDispatchForCompany(db, company.id, deliveryId);
     return res.json(row);
   } catch (error) {
     return next(error);
@@ -206,5 +203,5 @@ module.exports = {
   suspendMyCourier,
   activateMyCourier,
   listMyDeliveries,
-  assignMyDelivery,
+  retryMyDeliveryDispatch,
 };

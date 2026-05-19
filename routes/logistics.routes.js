@@ -11,7 +11,7 @@ const {
   suspendMyCourier,
   activateMyCourier,
   listMyDeliveries,
-  assignMyDelivery,
+  retryMyDeliveryDispatch,
 } = require('../controllers/logistics.controller');
 const { authMiddleware } = require('../middlewares/auth.middleware');
 const { requireRoles } = require('../middlewares/role.middleware');
@@ -43,6 +43,6 @@ router.post('/livreurs', ...gestionnaireActive, createMyCourier);
 router.patch('/livreurs/:livreurId/disponibilite', ...gestionnaireActive, updateMyCourierAvailability);
 router.patch('/livreurs/:livreurId/suspend', ...gestionnaireActive, suspendMyCourier);
 router.patch('/livreurs/:livreurId/activate', ...gestionnaireActive, activateMyCourier);
-router.patch('/livraisons/:deliveryId/assign', ...gestionnaireActive, assignMyDelivery);
+router.post('/livraisons/:deliveryId/retry-dispatch', ...gestionnaireActive, retryMyDeliveryDispatch);
 
 module.exports = router;

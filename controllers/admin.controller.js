@@ -834,19 +834,8 @@ async function assignDeliveryCourier(req, res, next) {
     const { livreurId } = req.body || {};
     requireFields(req.body, ['livreurId']);
     const db = getDb();
-
-    const { data, error } = await db
-      .from('livraisons')
-      .update({
-        livreur_id: livreurId,
-        statut: 'en_route',
-        attribuee_at: new Date().toISOString(),
-      })
-      .eq('id', deliveryId)
-      .select('*')
-      .single();
-    if (error || !data) throw createHttpError(404, 'Livraison introuvable.');
-
+    const { assignLivreurManually } = require('../services/dispatch.service');
+    const data = await assignLivreurManually(db, deliveryId, livreurId, 'admin');
     return res.json(data);
   } catch (error) {
     return next(error);

@@ -1,5 +1,6 @@
 const { getDb } = require('../config/db');
 const { createHttpError, requireFields } = require('../utils/http');
+const { onSousCommandeReady } = require('../services/dispatch.service');
 
 /** Statuts autorisés pour une sous-commande (schéma v3). */
 const ALLOWED_SOUS_STATUT = new Set([
@@ -526,6 +527,10 @@ async function updateOrderStatus(req, res, next) {
       .select('*')
       .single();
     if (error || !updated) throw createHttpError(404, 'Sous-commande introuvable');
+
+    if (statut === 'prete') {
+      await onSousCommandeReady(db, targetId);
+    }
 
     return res.json(updated);
   } catch (error) {

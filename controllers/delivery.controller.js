@@ -291,18 +291,8 @@ async function acceptDelivery(req, res, next) {
     const db = getDb();
     const courierId = await getLivreurIdForUser(db, req.auth.userId);
 
-    const { data, error } = await db
-      .from('livraisons')
-      .update({
-        livreur_id: courierId,
-        statut: 'en_route',
-        attribuee_at: new Date().toISOString(),
-      })
-      .eq('id', deliveryId)
-      .select('*')
-      .single();
-    if (error || !data) throw createHttpError(404, 'Livraison introuvable');
-
+    const { assignLivreurToLivraison } = require('../services/dispatch.service');
+    const data = await assignLivreurToLivraison(db, deliveryId, courierId, { source: 'livreur' });
     return res.json(data);
   } catch (error) {
     return next(error);
