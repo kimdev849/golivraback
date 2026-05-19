@@ -845,45 +845,158 @@ async function assignDeliveryCourier(req, res, next) {
 async function getAdminCommissions(req, res, next) {
   try {
     const db = getDb();
-    const { data: scs, error } = await db
-      .from('sous_commandes')
-      .select('id, total, commission_ttc, commission_pct, created_at, restaurant_id, boutique_id, statut')
-      .order('created_at', { ascending: false });
+    const { resolveGolivraPlatformUserId } = require('../services/wallet.service');
+    const golivraUserId = await resolveGolivraPlatformUserId(db);
+    const { data: pf } = await db.from('portefeuilles').select('id').eq('utilisateur_id', golivraUserId).maybeSingle();
+
+    const { data: txs, error } = pf
+      ? await db
+          .from('transactions_portefeuille')
+          .select('*')
+          .eq('portefeuille_id', pf.id)
+          .eq('type', 'commission_golivra')
+          .order('created_at', { ascending: false })
+          .limit(200)
+      : { data: [], error: null };
     if (error) throw error;
 
-    const totalCommission = (scs || []).reduce((acc, sc) => acc + Number(sc.commission_ttc ?? 0), 0);
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-    const monthScs = (scs || []).filter((sc) => sc.created_at >= monthStart);
-    const monthCommission = monthScs.reduce((acc, sc) => acc + Number(sc.commission_ttc ?? 0), 0);
-
+    let totalCommission = 0;
+    let monthCommission = 0;
     const rows = [];
-    for (const sc of scs || []) {
-      let etablissement = '—';
-      if (sc.restaurant_id) {
-        const { data: r } = await db.from('restaurants').select('nom').eq('id', sc.restaurant_id).maybeSingle();
-        etablissement = r?.nom || 'Restaurant';
-      } else if (sc.boutique_id) {
-        const { data: b } = await db.from('boutiques').select('nom').eq('id', sc.boutique_id).maybeSingle();
-        etablissement = b?.nom || 'Boutique';
-      }
+
+    for (const t of txs || []) {
+      const m = Number(t.montant);
+      totalCommission += m;
+      if (t.created_at >= monthStart) monthCommission += m;
       rows.push({
-        id: sc.id,
-        periode: sc.created_at,
-        etablissement,
+        id: t.id,
+        periode: t.created_at,
+        etablissement: 'GoLivra (livraison)',
         livraisons: 1,
-        montant: Number(sc.total ?? 0),
-        commission: Number(sc.commission_ttc ?? 0),
-        statut: sc.statut,
+        montant: m,
+        commission: m,
+        statut: 'livree',
+        description: t.description,
       });
     }
+
+    const { data: pending } = await db
+      .from('demandes_retrait')
+      .select('montant')
+      .eq('statut', 'en_attente');
+    const reversements = (pending || []).reduce((a, r) => a + Number(r.montant), 0);
 
     return res.json({
       total_commission: totalCommission,
       commission_mois: monthCommission,
-      reversements_en_attente: monthCommission,
-      factures_emises: (scs || []).length,
+      reversements_en_attente: reversements,
+      factures_emises: rows.length,
       lignes: rows,
+      note: 'Commissions uniquement sur frais de livraison — pas de commission sur ventes produits.',
+    });
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function getAdminPlatformWallet(req, res, next) {
+  try {
+    const { getPlatformWalletAdmin } = require('../services/wallet.service');
+    const db = getDb();
+    return res.json(await getPlatformWalletAdmin(db));
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function listAdminWithdrawals(req, res, next) {
+  try {
+    const { listWithdrawalsAdmin } = require('../services/wallet.service');
+    const db = getDb();
+    const statut = typeof req.query.statut === 'string' ? req.query.statut.trim() : '';
+    return res.json(await listWithdrawalsAdmin(db, { statut: statut || undefined }));
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function processAdminWithdrawal(req, res, next) {
+  try {
+    const { processWithdrawalAdmin } = require('../services/wallet.service');
+    const { retraitId } = req.params;
+    const { action, note_admin } = req.body || {};
+    const db = getDb();
+    return res.json(
+      await processWithdrawalAdmin(db, retraitId, req.auth.userId, { action, note_admin }),
+    );
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function getAdminCharts(req, res, next) {
+  try {
+    const db = getDb();
+    const days = Math.min(90, Math.max(7, Number(req.query.days) || 30));
+    const since = new Date();
+    since.setDate(since.getDate() - days);
+    const sinceIso = since.toISOString();
+
+    const { data: orders, error: ordErr } = await db
+      .from('commandes')
+      .select('id, created_at, statut, total')
+      .gte('created_at', sinceIso)
+      .order('created_at', { ascending: true });
+    if (ordErr) throw ordErr;
+
+    const ordersByDay = new Map();
+    for (let i = 0; i < days; i += 1) {
+      const d = new Date();
+      d.setDate(d.getDate() - (days - 1 - i));
+      const key = d.toISOString().slice(0, 10);
+      ordersByDay.set(key, { date: key, count: 0, revenue_fcfa: 0 });
+    }
+
+    for (const o of orders || []) {
+      const key = String(o.created_at || '').slice(0, 10);
+      if (!ordersByDay.has(key)) continue;
+      const row = ordersByDay.get(key);
+      row.count += 1;
+      if (o.statut !== 'annulee') {
+        row.revenue_fcfa += Number(o.total || 0);
+      }
+    }
+
+    const { resolveGolivraPlatformUserId } = require('../services/wallet.service');
+    const golivraUserId = await resolveGolivraPlatformUserId(db);
+    const { data: pf } = await db.from('portefeuilles').select('id').eq('utilisateur_id', golivraUserId).maybeSingle();
+
+    const commissionsByDay = new Map();
+    for (const key of ordersByDay.keys()) {
+      commissionsByDay.set(key, { date: key, amount_fcfa: 0 });
+    }
+
+    if (pf?.id) {
+      const { data: txs, error: txErr } = await db
+        .from('transactions_portefeuille')
+        .select('montant, created_at')
+        .eq('portefeuille_id', pf.id)
+        .eq('type', 'commission_golivra')
+        .gte('created_at', sinceIso);
+      if (txErr) throw txErr;
+      for (const t of txs || []) {
+        const key = String(t.created_at || '').slice(0, 10);
+        if (!commissionsByDay.has(key)) continue;
+        commissionsByDay.get(key).amount_fcfa += Number(t.montant || 0);
+      }
+    }
+
+    return res.json({
+      days,
+      orders_by_day: [...ordersByDay.values()],
+      commissions_by_day: [...commissionsByDay.values()],
     });
   } catch (error) {
     return next(error);
@@ -892,6 +1005,7 @@ async function getAdminCommissions(req, res, next) {
 
 module.exports = {
   getAdminStats,
+  getAdminCharts,
   listAllEnterprises,
   listEnterprisesPending,
   getEnterpriseAdmin,
@@ -911,4 +1025,7 @@ module.exports = {
   updateLogisticsStatus,
   listAdminDeliveries,
   getAdminCommissions,
+  getAdminPlatformWallet,
+  listAdminWithdrawals,
+  processAdminWithdrawal,
 };

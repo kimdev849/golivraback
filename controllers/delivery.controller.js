@@ -27,6 +27,48 @@ function startOfTodayIso() {
 }
 
 async function mapCourierMissionRow(db, liv) {
+  const isExterne = liv.type_livraison === 'externe' || !liv.sous_commande_id;
+
+  if (isExterne) {
+    let adresseRetrait = deliveryAddressFromSnapshot(liv.adresse_collecte_snapshot);
+    let commerceNom = '';
+    if (liv.restaurant_id) {
+      const { data: r } = await db
+        .from('restaurants')
+        .select('nom, adresse_ligne1')
+        .eq('id', liv.restaurant_id)
+        .maybeSingle();
+      commerceNom = r?.nom || '';
+      if (!adresseRetrait) adresseRetrait = r?.adresse_ligne1 || r?.nom || '';
+    }
+    if (liv.boutique_id) {
+      const { data: b } = await db
+        .from('boutiques')
+        .select('nom, adresse_ligne1')
+        .eq('id', liv.boutique_id)
+        .maybeSingle();
+      commerceNom = b?.nom || '';
+      if (!adresseRetrait) adresseRetrait = b?.adresse_ligne1 || b?.nom || '';
+    }
+
+    return {
+      id: liv.id,
+      statut: liv.statut,
+      type_livraison: 'externe',
+      created_at: liv.created_at,
+      attribuee_at: liv.attribuee_at,
+      livree_at: liv.livree_at,
+      adresse_livraison: deliveryAddressFromSnapshot(liv.adresse_livraison_snapshot),
+      adresse_retrait: adresseRetrait,
+      client_nom: liv.client_nom || null,
+      client_telephone: liv.client_telephone || null,
+      commerce_nom: commerceNom || null,
+      montant_total: liv.montant_total != null ? Number(liv.montant_total) : null,
+      note: liv.note || null,
+      commande: null,
+    };
+  }
+
   const { data: sc } = await db.from('sous_commandes').select('*').eq('id', liv.sous_commande_id).maybeSingle();
 
   let commande = null;
@@ -59,6 +101,7 @@ async function mapCourierMissionRow(db, liv) {
   return {
     id: liv.id,
     statut: liv.statut,
+    type_livraison: 'commande',
     created_at: liv.created_at,
     attribuee_at: liv.attribuee_at,
     livree_at: liv.livree_at,
@@ -167,11 +210,15 @@ async function getCourierProfile(req, res, next) {
       entreprise = c;
     }
 
+    const { courierHasActiveMission } = require('../services/dispatch.service');
     const { data: missions } = await db.from('livraisons').select('id, statut, created_at').eq('livreur_id', livreur.id);
     const todayStart = startOfTodayIso();
-    const activeStatuses = new Set(['en_attente', 'assignee', 'en_route', 'en_cours']);
+    const activeStatuses = new Set(['attribuee', 'en_collecte', 'collectee', 'en_route']);
     const rows = missions || [];
-    const missionsActives = rows.filter((m) => activeStatuses.has(m.statut)).length;
+    const enMission = await courierHasActiveMission(db, livreur.id);
+    const missionsActives = enMission
+      ? rows.filter((m) => activeStatuses.has(m.statut)).length || 1
+      : rows.filter((m) => activeStatuses.has(m.statut)).length;
     const missionsAujourdhui = rows.filter((m) => m.created_at >= todayStart).length;
 
     return res.json({
@@ -179,6 +226,7 @@ async function getCourierProfile(req, res, next) {
         id: livreur.id,
         type_vehicule: livreur.type_vehicule,
         est_disponible: livreur.est_disponible,
+        statut_operationnel: enMission ? 'en_mission' : livreur.est_disponible ? 'disponible' : 'hors_ligne',
         est_approuve: livreur.est_approuve,
         nb_livraisons_total: livreur.nb_livraisons_total,
         nb_livraisons_reussies: livreur.nb_livraisons_reussies,
@@ -211,22 +259,54 @@ async function listCourierMissions(req, res, next) {
     const db = getDb();
     const courierId = await getLivreurIdForUser(db, req.auth.userId);
     const status = typeof req.query.status === 'string' ? req.query.status.trim() : '';
+    const scope = typeof req.query.scope === 'string' ? req.query.scope.trim() : 'all';
 
-    let query = db
-      .from('livraisons')
-      .select('*')
-      .eq('livreur_id', courierId)
-      .order('created_at', { ascending: false })
-      .limit(50);
-    if (status) query = query.eq('statut', status);
+    const { listOpenDeliveries, courierHasActiveMission } = require('../services/dispatch.service');
 
-    const { data: livraisons, error } = await query;
-    if (error) throw error;
+    const { data: livreur } = await db
+      .from('livreurs')
+      .select('est_disponible, est_approuve, latitude_actuelle, longitude_actuelle')
+      .eq('id', courierId)
+      .maybeSingle();
 
     const out = [];
-    for (const liv of livraisons || []) {
-      out.push(await mapCourierMissionRow(db, liv));
+    const seen = new Set();
+
+    const canSeeOpen =
+      scope !== 'mine' &&
+      livreur?.est_disponible &&
+      livreur?.est_approuve &&
+      !(await courierHasActiveMission(db, courierId));
+
+    if (canSeeOpen) {
+      const open = await listOpenDeliveries(db);
+      for (const liv of open) {
+        if (status && liv.statut !== status) continue;
+        seen.add(liv.id);
+        const row = await mapCourierMissionRow(db, liv);
+        out.push({ ...row, ouverte: true });
+      }
     }
+
+    if (scope !== 'open') {
+      let query = db
+        .from('livraisons')
+        .select('*')
+        .eq('livreur_id', courierId)
+        .order('created_at', { ascending: false })
+        .limit(50);
+      if (status) query = query.eq('statut', status);
+
+      const { data: livraisons, error } = await query;
+      if (error) throw error;
+
+      for (const liv of livraisons || []) {
+        if (seen.has(liv.id)) continue;
+        const row = await mapCourierMissionRow(db, liv);
+        out.push({ ...row, ouverte: false });
+      }
+    }
+
     return res.json(out);
   } catch (error) {
     return next(error);
@@ -238,10 +318,40 @@ async function updateCourierAvailability(req, res, next) {
     requireFields(req.body, ['disponible']);
     const db = getDb();
     const courierId = await getLivreurIdForUser(db, req.auth.userId);
+    const disponible = Boolean(req.body.disponible);
+
+    const { data: livreur, error: lErr } = await db
+      .from('livreurs')
+      .select('id, est_approuve, disponibilite_bloquee_entreprise, utilisateur_id')
+      .eq('id', courierId)
+      .maybeSingle();
+    if (lErr) throw lErr;
+    if (!livreur) throw createHttpError(404, 'Profil livreur introuvable');
+
+    const { data: user } = await db
+      .from('utilisateurs')
+      .select('est_actif')
+      .eq('id', livreur.utilisateur_id)
+      .maybeSingle();
+    if (user?.est_actif === false) {
+      throw createHttpError(403, 'Compte suspendu — contactez votre entreprise.');
+    }
+
+    if (disponible) {
+      if (!livreur.est_approuve) {
+        throw createHttpError(403, 'Profil livreur en attente d\'approbation.');
+      }
+      if (livreur.disponibilite_bloquee_entreprise) {
+        throw createHttpError(
+          403,
+          'Votre entreprise logistique vous a désactivé. Contactez-la pour repasser en ligne.',
+        );
+      }
+    }
 
     const { data, error } = await db
       .from('livreurs')
-      .update({ est_disponible: Boolean(req.body.disponible) })
+      .update({ est_disponible: disponible })
       .eq('id', courierId)
       .select('*')
       .single();
@@ -291,9 +401,9 @@ async function acceptDelivery(req, res, next) {
     const db = getDb();
     const courierId = await getLivreurIdForUser(db, req.auth.userId);
 
-    const { assignLivreurToLivraison } = require('../services/dispatch.service');
-    const data = await assignLivreurToLivraison(db, deliveryId, courierId, { source: 'livreur' });
-    return res.json(data);
+    const { acceptOpenDelivery } = require('../services/dispatch.service');
+    const data = await acceptOpenDelivery(db, deliveryId, courierId);
+    return res.json(await mapCourierMissionRow(db, data));
   } catch (error) {
     return next(error);
   }
@@ -305,18 +415,8 @@ async function completeDelivery(req, res, next) {
     const db = getDb();
     const courierId = await getLivreurIdForUser(db, req.auth.userId);
 
-    const { data, error } = await db
-      .from('livraisons')
-      .update({
-        statut: 'livree',
-        livree_at: new Date().toISOString(),
-      })
-      .eq('id', deliveryId)
-      .eq('livreur_id', courierId)
-      .select('*')
-      .single();
-    if (error || !data) throw createHttpError(404, 'Livraison introuvable pour ce livreur');
-
+    const { completeLivraisonAndSync } = require('../services/dispatch.service');
+    const data = await completeLivraisonAndSync(db, deliveryId, courierId);
     return res.json(await mapCourierMissionRow(db, data));
   } catch (error) {
     return next(error);

@@ -1,6 +1,7 @@
 const express = require('express');
 const {
   getAdminStats,
+  getAdminCharts,
   listAllEnterprises,
   listEnterprisesPending,
   getEnterpriseAdmin,
@@ -20,6 +21,9 @@ const {
   updateLogisticsStatus,
   listAdminDeliveries,
   getAdminCommissions,
+  getAdminPlatformWallet,
+  listAdminWithdrawals,
+  processAdminWithdrawal,
 } = require('../controllers/admin.controller');
 const { authMiddleware } = require('../middlewares/auth.middleware');
 const { requireRoles } = require('../middlewares/role.middleware');
@@ -28,6 +32,7 @@ const router = express.Router();
 const adminOnly = [authMiddleware, requireRoles(['admin'])];
 
 router.get('/stats', ...adminOnly, getAdminStats);
+router.get('/stats/charts', ...adminOnly, getAdminCharts);
 
 router.get('/enterprises', ...adminOnly, listAllEnterprises);
 router.get('/enterprises/pending', ...adminOnly, listEnterprisesPending);
@@ -54,5 +59,8 @@ router.patch('/logistics/:companyId/status', ...adminOnly, updateLogisticsStatus
 router.get('/deliveries', ...adminOnly, listAdminDeliveries);
 
 router.get('/commissions', ...adminOnly, getAdminCommissions);
+router.get('/portefeuille', ...adminOnly, getAdminPlatformWallet);
+router.get('/retraits', ...adminOnly, listAdminWithdrawals);
+router.patch('/retraits/:retraitId', ...adminOnly, processAdminWithdrawal);
 
 module.exports = router;

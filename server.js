@@ -13,6 +13,13 @@ const productRoutes = require('./routes/product.routes');
 const adminRoutes = require('./routes/admin.routes');
 const logisticsRoutes = require('./routes/logistics.routes');
 const uploadRoutes = require('./routes/upload.routes');
+const reviewRoutes = require('./routes/review.routes');
+const addressRoutes = require('./routes/address.routes');
+const walletRoutes = require('./routes/wallet.routes');
+const notificationRoutes = require('./routes/notification.routes');
+const favoritesRoutes = require('./routes/favorites.routes');
+const cartRoutes = require('./routes/cart.routes');
+const settingsRoutes = require('./routes/settings.routes');
 const { getDb } = require('./config/db');
 
 const app = express();
@@ -103,6 +110,13 @@ app.use('/api/products', productRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/logistics', logisticsRoutes);
 app.use('/api/uploads', uploadRoutes);
+app.use('/api/reviews', reviewRoutes);
+app.use('/api/addresses', addressRoutes);
+app.use('/api/wallet', walletRoutes);
+app.use('/api/notifications', notificationRoutes);
+app.use('/api/favorites', favoritesRoutes);
+app.use('/api/cart', cartRoutes);
+app.use('/api/settings', settingsRoutes);
 
 function httpErrorCode(status, err) {
   const raw = err.code;

@@ -51,6 +51,17 @@ async function getMyCompany(req, res, next) {
   }
 }
 
+async function getMyWallet(req, res, next) {
+  try {
+    const { getWalletDashboard } = require('../services/wallet.service');
+    const db = getDb();
+    const data = await getWalletDashboard(db, req.auth.userId);
+    return res.json(data);
+  } catch (error) {
+    return next(error);
+  }
+}
+
 async function getMyStats(req, res, next) {
   try {
     const company = req.logisticsCompany;
@@ -193,6 +204,7 @@ async function retryMyDeliveryDispatch(req, res, next) {
 
 module.exports = {
   getMyCompany,
+  getMyWallet,
   getMyStats,
   getMyOperations,
   getMyDelays,

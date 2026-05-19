@@ -4,6 +4,8 @@ const { createHttpError, requireFields } = require('../utils/http');
 const { generateToken, hashSessionToken } = require('../utils/token');
 const { normalizeCgE164 } = require('../utils/phone');
 const { findPendingOtp, deleteOtpById } = require('../services/otp.store');
+const { getPreferences, updatePreferences } = require('../services/preferences.service');
+const { getPublicSettings } = require('../services/settings.service');
 
 const PUBLIC_REGISTER_ROLES = new Set(['client', 'restaurateur', 'commercant']);
 const STAFF_LOGIN_ROLES = new Set(['admin', 'gestionnaire_logistique']);
@@ -90,6 +92,107 @@ async function buildSessionResponse(db, user, req) {
   };
 }
 
+async function assertSignupsAllowed(db) {
+  try {
+    const pub = await getPublicSettings(db);
+    if (pub.golivra_maintenance_mode === true) {
+      throw createHttpError(503, 'GoLivra est en maintenance. Réessayez plus tard.');
+    }
+    if (pub.golivra_signups_open === false) {
+      throw createHttpError(403, 'Les inscriptions sont temporairement fermées.');
+    }
+  } catch (e) {
+    if (e.status || e.statusCode) throw e;
+  }
+}
+
+async function resetPassword(req, res, next) {
+  try {
+    const { telephone: telephoneRaw, otpCode, newPassword } = req.body;
+    requireFields(req.body, ['telephone', 'otpCode', 'newPassword']);
+
+    if (typeof newPassword !== 'string' || newPassword.length < 6) {
+      throw createHttpError(400, 'Le nouveau mot de passe doit contenir au moins 6 caractères.');
+    }
+
+    const telephone = normalizeCgE164(telephoneRaw);
+    if (!telephone) {
+      throw createHttpError(400, 'Numéro de téléphone invalide. Indiquez +242 suivi de 9 chiffres (Congo).');
+    }
+
+    const db = getDb();
+    const otpRow = await findValidOtpRow(db, telephone, otpCode);
+
+    const { data: user, error: userErr } = await db
+      .from('utilisateurs')
+      .select('id, nom, telephone, email, role_id, est_approuve, est_actif, avatar_url')
+      .eq('telephone', telephone)
+      .maybeSingle();
+
+    if (userErr) throw userErr;
+    if (!user) {
+      throw createHttpError(404, 'Aucun compte associé à ce numéro.');
+    }
+    if (user.est_actif === false) {
+      throw createHttpError(403, 'Ce compte est désactivé.');
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    const { error: upErr } = await db
+      .from('utilisateurs')
+      .update({ mot_de_passe_hash: hashedPassword })
+      .eq('id', user.id);
+    if (upErr) throw upErr;
+
+    await deleteOtpRow(db, otpRow.id);
+
+    return res.json({
+      message: 'Mot de passe réinitialisé. Vous pouvez vous connecter.',
+      ...(process.env.NODE_ENV !== 'production'
+        ? { devNote: 'En production, connectez-vous avec le nouveau mot de passe.' }
+        : {}),
+    });
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function getMyPreferences(req, res, next) {
+  try {
+    const db = getDb();
+    const preferences = await getPreferences(db, req.auth.userId);
+    return res.json({ preferences });
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function patchMyPreferences(req, res, next) {
+  try {
+    const db = getDb();
+    const allowed = {};
+    if (req.body.notif_push_enabled !== undefined) {
+      allowed.notif_push_enabled = Boolean(req.body.notif_push_enabled);
+    }
+    if (req.body.notif_email_enabled !== undefined) {
+      allowed.notif_email_enabled = Boolean(req.body.notif_email_enabled);
+    }
+    if (req.body.dark_mode !== undefined) {
+      allowed.dark_mode = Boolean(req.body.dark_mode);
+    }
+    if (req.body.langue !== undefined && typeof req.body.langue === 'string') {
+      allowed.langue = req.body.langue.trim().slice(0, 10) || 'fr';
+    }
+    if (Object.keys(allowed).length === 0) {
+      throw createHttpError(400, 'Aucune préférence à mettre à jour.');
+    }
+    const preferences = await updatePreferences(db, req.auth.userId, allowed);
+    return res.json({ preferences });
+  } catch (error) {
+    return next(error);
+  }
+}
+
 async function register(req, res, next) {
   try {
     const rawRole = req.body.role;
@@ -105,6 +208,7 @@ async function register(req, res, next) {
     }
 
     const db = getDb();
+    await assertSignupsAllowed(db);
     if (!PUBLIC_REGISTER_ROLES.has(role)) {
       throw createHttpError(403, 'Inscription réservée aux rôles client, restaurateur ou commerçant.');
     }
@@ -450,4 +554,15 @@ async function changePassword(req, res, next) {
   }
 }
 
-module.exports = { register, login, staffLogin, me, logout, updateProfile, changePassword };
+module.exports = {
+  register,
+  login,
+  staffLogin,
+  me,
+  logout,
+  updateProfile,
+  changePassword,
+  resetPassword,
+  getMyPreferences,
+  patchMyPreferences,
+};

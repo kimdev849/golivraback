@@ -319,7 +319,11 @@ async function suspendCourier(db, livreurId, companyId) {
 
   await db
     .from('livreurs')
-    .update({ est_disponible: false, est_approuve: false })
+    .update({
+      est_disponible: false,
+      est_approuve: false,
+      disponibilite_bloquee_entreprise: true,
+    })
     .eq('id', livreurId);
 
   await revokeUserSessions(db, livreur.utilisateur_id);
@@ -346,9 +350,14 @@ async function setCourierAvailability(db, livreurId, companyId, disponible) {
     throw createHttpError(400, 'Impossible de modifier la disponibilité d\'un compte suspendu.');
   }
 
+  const patch = {
+    est_disponible: Boolean(disponible),
+    disponibilite_bloquee_entreprise: !disponible,
+  };
+
   const { data, error } = await db
     .from('livreurs')
-    .update({ est_disponible: Boolean(disponible) })
+    .update(patch)
     .eq('id', livreurId)
     .eq('entreprise_logistique_id', companyId)
     .select('*')
@@ -489,14 +498,15 @@ async function listDeliveriesForLogisticsCompany(db, companyId, { status } = {})
 }
 
 async function getLogisticsStatsForCompany(db, companyId) {
-  const [couriers, deliveries] = await Promise.all([
+  const [couriers, deliveries, company] = await Promise.all([
     listCouriersForCompany(db, companyId),
     loadDeliveriesForCompany(db, companyId),
+    getCompanyById(db, companyId),
   ]);
 
   const todayStart = startOfTodayIso();
   const todayDeliveries = deliveries.filter((d) => d.created_at >= todayStart);
-  const activeStatuses = new Set(['en_attente', 'en_route', 'en_cours', 'assignee']);
+  const activeStatuses = new Set(['en_attente', 'attribuee', 'en_collecte', 'collectee', 'en_route']);
   const enCours = deliveries.filter((d) => activeStatuses.has(d.statut));
   const enRetard = deliveries.filter((d) => d.en_retard);
   const livreesAujourdhui = todayDeliveries.filter((d) => d.statut === 'livree');
@@ -526,6 +536,46 @@ async function getLogisticsStatsForCompany(db, companyId) {
   const tauxReussite =
     totalLivraisonsCouriers > 0 ? Math.round((reussiesCouriers / totalLivraisonsCouriers) * 100) : null;
 
+  const { getPricingConfig } = require('./pricing.service');
+  const pricingConfig = await getPricingConfig(db);
+
+  const livrees = deliveries.filter((d) => d.statut === 'livree');
+  const livreesAujourdhuiAll = todayDeliveries.filter((d) => d.statut === 'livree');
+
+  const livreeIds = livrees.map((d) => d.id);
+  let revenusLivraisonTotal = 0;
+  if (livreeIds.length > 0) {
+    const { data: rows } = await db
+      .from('livraisons')
+      .select('id, commission_logistique, created_at')
+      .in('id', livreeIds);
+    for (const row of rows || []) {
+      revenusLivraisonTotal += Number(row.commission_logistique ?? 0);
+    }
+  }
+
+  const livreeTodayIds = livreesAujourdhuiAll.map((d) => d.id);
+  let revenusLivraisonAujourdhui = 0;
+  if (livreeTodayIds.length > 0) {
+    const { data: rowsToday } = await db
+      .from('livraisons')
+      .select('id, commission_logistique')
+      .in('id', livreeTodayIds);
+    for (const row of rowsToday || []) {
+      revenusLivraisonAujourdhui += Number(row.commission_logistique ?? 0);
+    }
+  }
+
+  let portefeuilleSolde = null;
+  if (company?.gestionnaire_id) {
+    const { getPortefeuilleSolde } = require('./wallet.service');
+    try {
+      portefeuilleSolde = await getPortefeuilleSolde(db, company.gestionnaire_id);
+    } catch {
+      portefeuilleSolde = null;
+    }
+  }
+
   return {
     seuils_retard: {
       assignation_minutes: DELAY_ASSIGN_MINUTES,
@@ -543,6 +593,17 @@ async function getLogisticsStatsForCompany(db, companyId) {
     taux_reussite_pct: tauxReussite,
     delai_moyen_minutes: delaiMoyenMinutes,
     par_statut: parStatut,
+    revenus_livraison_total_fcfa: revenusLivraisonTotal,
+    revenus_livraison_aujourdhui_fcfa: revenusLivraisonAujourdhui,
+    split_ventes_percent: {
+      merchant_percent: pricingConfig.merchant_percent,
+      platform_fee_percent: pricingConfig.platform_fee_percent,
+    },
+    split_livraison_percent: {
+      delivery_logistics_percent: pricingConfig.delivery_logistics_percent,
+      delivery_platform_percent: pricingConfig.delivery_platform_percent,
+    },
+    portefeuille_solde_fcfa: portefeuilleSolde,
     mis_a_jour_le: new Date().toISOString(),
   };
 }
@@ -606,9 +667,15 @@ async function retryAutoDispatchForCompany(db, companyId, deliveryId) {
     throw createHttpError(403, 'Cette course est suivie par un autre réseau de livreurs.');
   }
 
-  const { autoAssignLivreur } = require('./dispatch.service');
-  const updated = await autoAssignLivreur(db, deliveryId);
-  return mapDeliveryRow(db, updated);
+  if (delivery.livreur_id) {
+    return mapDeliveryRow(db, delivery);
+  }
+
+  const { notifyAvailableCouriersForDelivery } = require('./notification.service');
+  await notifyAvailableCouriersForDelivery(db, deliveryId);
+
+  const { data: refreshed } = await db.from('livraisons').select('*').eq('id', deliveryId).maybeSingle();
+  return mapDeliveryRow(db, refreshed || delivery);
 }
 
 module.exports = {

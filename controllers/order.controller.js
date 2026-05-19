@@ -1,6 +1,10 @@
 const { getDb } = require('../config/db');
 const { createHttpError, requireFields } = require('../utils/http');
-const { onSousCommandeReady } = require('../services/dispatch.service');
+const {
+  createOrderFromPayload,
+  updateSousCommandeStatut,
+  mapSousStatutToVendor,
+} = require('../services/order.service');
 
 /** Statuts autorisés pour une sous-commande (schéma v3). */
 const ALLOWED_SOUS_STATUT = new Set([
@@ -33,7 +37,7 @@ function snapshotAddress(text) {
   return { texte: text, version: 1 };
 }
 
-function mapCommandeListRow(c, firstEstablishmentId) {
+function mapCommandeListRow(c, firstEstablishmentId, extra = {}) {
   const snap = c.adresse_livraison_snapshot;
   let addr = null;
   if (snap && typeof snap === 'object' && snap.texte) addr = snap.texte;
@@ -50,6 +54,7 @@ function mapCommandeListRow(c, firstEstablishmentId) {
     livree_le: c.livree_at ?? null,
     created_at: c.created_at,
     total: c.total,
+    ...extra,
   };
 }
 
@@ -90,157 +95,42 @@ async function findVendorSousCommandeIdsForOrder(db, userId, commandeId) {
 
 async function createOrder(req, res, next) {
   try {
-    const { entrepriseId, establishmentType, articles, adresseLivraison } = req.body;
-    requireFields(req.body, ['entrepriseId', 'establishmentType', 'articles', 'adresseLivraison']);
-    if (!Array.isArray(articles) || articles.length === 0) {
-      throw createHttpError(400, 'Le champ articles doit être un tableau non vide');
+    const { adresseLivraison, adresseLivraisonId, adresse } = req.body || {};
+    const hasText = typeof adresseLivraison === 'string' && adresseLivraison.trim().length >= 8;
+    const hasStruct =
+      adresse &&
+      typeof adresse === 'object' &&
+      String(adresse.quartier || '').trim() &&
+      String(adresse.ligne1 || '').trim().length >= 4;
+    const hasId = typeof adresseLivraisonId === 'string' && adresseLivraisonId.trim();
+    if (!hasText && !hasStruct && !hasId) {
+      const { createHttpError } = require('../utils/http');
+      throw createHttpError(400, 'Indiquez une adresse de livraison (quartier + description).');
     }
-
-    if (establishmentType !== 'restaurant' && establishmentType !== 'boutique') {
-      throw createHttpError(400, 'establishmentType doit être restaurant ou boutique');
+    const { methodePaiement } = req.body || {};
+    const payOk = methodePaiement === 'airtel_money' || methodePaiement === 'mtn_money';
+    if (!payOk) {
+      const { createHttpError } = require('../utils/http');
+      throw createHttpError(400, 'Choisissez Airtel Money ou MTN Mobile Money.');
     }
-
     const db = getDb();
-    const resolved = await resolveEstablishmentRow(db, entrepriseId, establishmentType);
-    if (!resolved) throw createHttpError(404, 'Commerce introuvable');
-    const { kind, row: ent } = resolved;
-
-    if (ent.statut !== 'active') {
-      throw createHttpError(403, 'Ce commerce n’est pas encore visible : validation en cours.');
-    }
-    if (ent.est_ouvert !== true) {
-      throw createHttpError(403, 'Ce commerce est temporairement fermé.');
-    }
-
-    const lines = [];
-    let sousTotal = 0;
-
-    for (const article of articles) {
-      const { itemId, quantite } = article;
-      const q = Math.max(1, Math.floor(Number(quantite)));
-      if (!itemId) throw createHttpError(400, 'Chaque article doit avoir itemId');
-
-      if (kind === 'restaurant') {
-        const { data: plat, error: pErr } = await db.from('plats').select('*').eq('id', itemId).maybeSingle();
-        if (pErr) throw pErr;
-        if (!plat || plat.restaurant_id !== entrepriseId) {
-          throw createHttpError(400, 'Plat invalide pour ce restaurant');
-        }
-        if (!plat.est_disponible) throw createHttpError(400, `Plat indisponible : ${plat.nom}`);
-        const pu = Number(plat.prix);
-        const lineTot = q * pu;
-        sousTotal += lineTot;
-        lines.push({
-          plat_id: plat.id,
-          article_id: null,
-          nom_produit: plat.nom,
-          description_produit: plat.description,
-          options_choisies: null,
-          quantite: q,
-          prix_unitaire: pu,
-          sous_total: lineTot,
-        });
-      } else {
-        const { data: art, error: aErr } = await db.from('articles').select('*').eq('id', itemId).maybeSingle();
-        if (aErr) throw aErr;
-        if (!art || art.boutique_id !== entrepriseId) {
-          throw createHttpError(400, 'Article invalide pour cette boutique');
-        }
-        if (!art.est_disponible) throw createHttpError(400, `Article indisponible : ${art.nom}`);
-        if (art.stock !== null && art.stock !== undefined && q > Number(art.stock)) {
-          throw createHttpError(400, 'Stock insuffisant');
-        }
-        const pu = Number(art.prix);
-        const lineTot = q * pu;
-        sousTotal += lineTot;
-        lines.push({
-          plat_id: null,
-          article_id: art.id,
-          nom_produit: art.nom,
-          description_produit: art.description,
-          options_choisies: null,
-          quantite: q,
-          prix_unitaire: pu,
-          sous_total: lineTot,
-        });
-      }
-    }
-
-    const addrSnap = snapshotAddress(String(adresseLivraison).trim());
-
-    const { data: commande, error: cErr } = await db
-      .from('commandes')
-      .insert({
-        client_id: req.auth.userId,
-        adresse_livraison_snapshot: addrSnap,
-        statut: 'en_attente',
-        sous_total: sousTotal,
-        frais_livraison_total: 0,
-        remise_totale: 0,
-        total: sousTotal,
-        methode_paiement: 'especes',
-      })
-      .select('*')
-      .single();
-    if (cErr) throw cErr;
-
-    const scPayload = {
-      commande_id: commande.id,
-      statut: 'en_attente',
-      mode_livraison: 'golivra',
-      sous_total: sousTotal,
-      frais_livraison: 0,
-      remise: 0,
-      total: sousTotal,
-    };
-    if (kind === 'restaurant') scPayload.restaurant_id = entrepriseId;
-    else scPayload.boutique_id = entrepriseId;
-
-    const { data: sous, error: sErr } = await db.from('sous_commandes').insert(scPayload).select('*').single();
-    if (sErr) throw sErr;
-
-    const itemRows = lines.map((l) => ({
-      sous_commande_id: sous.id,
-      plat_id: l.plat_id,
-      article_id: l.article_id,
-      nom_produit: l.nom_produit,
-      description_produit: l.description_produit,
-      options_choisies: l.options_choisies,
-      quantite: l.quantite,
-      prix_unitaire: l.prix_unitaire,
-      sous_total: l.sous_total,
-    }));
-
-    const { error: iErr } = await db.from('sous_commande_items').insert(itemRows);
-    if (iErr) throw iErr;
-
-    return res.status(201).json(
-      mapCommandeListRow(commande, entrepriseId)
-    );
+    const { commande, sousCommandes } = await createOrderFromPayload(db, req.auth.userId, req.body);
+    const { notifyUserSafe } = require('../services/notification.service');
+    await notifyUserSafe(db, {
+      utilisateurId: req.auth.userId,
+      type: 'commande_statut',
+      titre: 'Commande créée',
+      corps: 'Finalisez le paiement Mobile Money pour confirmer votre commande.',
+      data: { commande_id: commande.id, action: 'open_orders' },
+    });
+    const first = sousCommandes[0];
+    const eid = first ? first.restaurant_id || first.boutique_id : null;
+    return res.status(201).json({
+      ...mapCommandeListRow(commande, eid),
+      sous_commandes: sousCommandes,
+    });
   } catch (error) {
     return next(error);
-  }
-}
-
-function mapSousStatutToVendor(statut) {
-  switch (statut) {
-    case 'en_attente':
-    case 'acceptee':
-      return 'a_preparer';
-    case 'en_preparation':
-      return 'en_preparation';
-    case 'prete':
-      return 'prete';
-    case 'collectee':
-      return 'en_livraison';
-    case 'livree':
-      return 'livree';
-    case 'annulee':
-    case 'refusee':
-    case 'remboursee':
-      return 'annulee';
-    default:
-      return 'a_preparer';
   }
 }
 
@@ -418,23 +308,59 @@ async function getVendorOrderDetails(req, res, next) {
 async function getOrders(req, res, next) {
   try {
     const db = getDb();
+    const clientId = req.auth.userId;
     const { data: commandes, error } = await db
       .from('commandes')
       .select('*')
-      .eq('client_id', req.auth.userId)
+      .eq('client_id', clientId)
       .order('created_at', { ascending: false });
     if (error) throw error;
 
+    const list = commandes || [];
+    if (list.length === 0) return res.json([]);
+
+    const commandeIds = list.map((c) => c.id);
+    const { data: allScs, error: scErr } = await db
+      .from('sous_commandes')
+      .select('id, commande_id, restaurant_id, boutique_id, statut')
+      .in('commande_id', commandeIds);
+    if (scErr) throw scErr;
+
+    const scByCommande = new Map();
+    for (const sc of allScs || []) {
+      if (!scByCommande.has(sc.commande_id)) scByCommande.set(sc.commande_id, []);
+      scByCommande.get(sc.commande_id).push(sc);
+    }
+
+    const livreeIds = (allScs || []).filter((s) => s.statut === 'livree').map((s) => s.id);
+    const ratedSet = new Set();
+    if (livreeIds.length > 0) {
+      const [{ data: avisR }, { data: avisB }] = await Promise.all([
+        db.from('avis_restaurants').select('sous_commande_id').eq('client_id', clientId).in('sous_commande_id', livreeIds),
+        db.from('avis_boutiques').select('sous_commande_id').eq('client_id', clientId).in('sous_commande_id', livreeIds),
+      ]);
+      for (const a of [...(avisR || []), ...(avisB || [])]) {
+        if (a.sous_commande_id) ratedSet.add(a.sous_commande_id);
+      }
+    }
+
     const out = [];
-    for (const c of commandes || []) {
-      const { data: scs } = await db
-        .from('sous_commandes')
-        .select('restaurant_id, boutique_id')
-        .eq('commande_id', c.id)
-        .limit(1);
-      const first = scs && scs[0];
+    for (const c of list) {
+      const scs = scByCommande.get(c.id) || [];
+      const first = scs[0];
       const eid = first ? first.restaurant_id || first.boutique_id : null;
-      out.push(mapCommandeListRow(c, eid));
+
+      const toRate = scs.find((s) => s.statut === 'livree' && !ratedSet.has(s.id));
+      const extra = toRate
+        ? {
+            peut_noter: true,
+            sous_commande_id: toRate.id,
+            entreprise_type: toRate.restaurant_id ? 'restaurant' : 'boutique',
+            entreprise_id: toRate.restaurant_id || toRate.boutique_id || eid,
+          }
+        : { peut_noter: false };
+
+      out.push(mapCommandeListRow(c, eid, extra));
     }
 
     return res.json(out);
@@ -484,7 +410,7 @@ async function getOrderDetails(req, res, next) {
 async function updateOrderStatus(req, res, next) {
   try {
     const { orderId } = req.params;
-    const { statut, sousCommandeId } = req.body;
+    const { statut, sousCommandeId, raisonRefus } = req.body;
     requireFields(req.body, ['statut']);
 
     const db = getDb();
@@ -520,18 +446,36 @@ async function updateOrderStatus(req, res, next) {
       );
     }
 
-    const { data: updated, error } = await db
-      .from('sous_commandes')
-      .update({ statut })
-      .eq('id', targetId)
-      .select('*')
-      .single();
-    if (error || !updated) throw createHttpError(404, 'Sous-commande introuvable');
+    const { data: current } = await db.from('sous_commandes').select('statut, mode_livraison').eq('id', targetId).maybeSingle();
+    if (!current) throw createHttpError(404, 'Sous-commande introuvable');
 
-    if (statut === 'prete') {
-      await onSousCommandeReady(db, targetId);
+    if (statut === 'acceptee' && current.statut !== 'en_attente') {
+      throw createHttpError(400, 'Cette commande ne peut plus être acceptée.');
+    }
+    if (statut === 'refusee' && current.statut !== 'en_attente') {
+      throw createHttpError(400, 'Cette commande ne peut plus être refusée.');
+    }
+    if (statut === 'prete' && current.statut !== 'en_preparation') {
+      throw createHttpError(400, 'La commande doit être en préparation avant d\'être marquée prête.');
+    }
+    if (
+      statut === 'en_preparation' &&
+      current.statut !== 'acceptee' &&
+      current.statut !== 'en_attente'
+    ) {
+      throw createHttpError(400, 'Acceptez la commande avant de démarrer la préparation.');
+    }
+    if (statut === 'collectee' || statut === 'livree') {
+      throw createHttpError(
+        400,
+        'La livraison est assurée par les livreurs GoLivra. Le commerce ne peut pas marquer « en route » ou « livrée ».',
+      );
     }
 
+    const extra = {};
+    if (statut === 'refusee' && raisonRefus) extra.raison_refus = String(raisonRefus).trim();
+
+    const updated = await updateSousCommandeStatut(db, targetId, statut, extra);
     return res.json(updated);
   } catch (error) {
     return next(error);

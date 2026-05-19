@@ -10,10 +10,26 @@ const {
   acceptDelivery,
   completeDelivery,
 } = require('../controllers/delivery.controller');
+const {
+  createVendorExternalDelivery,
+  listVendorExternalDeliveriesHandler,
+} = require('../controllers/vendor-delivery.controller');
 
 const router = express.Router();
 
 router.get('/status/:orderId', authMiddleware, getDeliveryStatus);
+router.get(
+  '/vendor/externe',
+  authMiddleware,
+  requireRoles(['restaurateur', 'commercant', 'admin']),
+  listVendorExternalDeliveriesHandler,
+);
+router.post(
+  '/vendor/externe',
+  authMiddleware,
+  requireRoles(['restaurateur', 'commercant', 'admin']),
+  createVendorExternalDelivery,
+);
 router.get('/courier/me', authMiddleware, requireRoles(['livreur', 'admin']), getCourierProfile);
 router.get('/courier/missions', authMiddleware, requireRoles(['livreur', 'admin']), listCourierMissions);
 router.patch('/courier/availability', authMiddleware, requireRoles(['livreur', 'admin']), updateCourierAvailability);

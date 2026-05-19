@@ -26,6 +26,9 @@ function mapRestaurant(r, categorieNom) {
     description: r.description,
     telephone: r.telephone,
     adresse: r.adresse_ligne1,
+    adresse_quartier: r.adresse_quartier ?? null,
+    adresse_ville: r.adresse_ville ?? null,
+    adresse_pays: r.adresse_pays ?? null,
     latitude: r.latitude,
     longitude: r.longitude,
     statut_moderation: r.statut,
@@ -35,8 +38,10 @@ function mapRestaurant(r, categorieNom) {
     categorie_nom: categorieNom ?? null,
     image_url: r.logo_url ?? null,
     delai_preparation_min: r.delai_preparation_min ?? 20,
-    livraison_propre: r.livraison_propre === true,
+      livraison_propre: false,
     frais_livraison: Number(r.frais_livraison ?? 500),
+    note_moyenne: r.note_moyenne != null ? Number(r.note_moyenne) : 0,
+    nb_avis: r.nb_avis != null ? Number(r.nb_avis) : 0,
   };
 }
 
@@ -48,6 +53,9 @@ function mapBoutique(b, categorieNom) {
     description: b.description,
     telephone: b.telephone,
     adresse: b.adresse_ligne1,
+    adresse_quartier: b.adresse_quartier ?? null,
+    adresse_ville: b.adresse_ville ?? null,
+    adresse_pays: b.adresse_pays ?? null,
     latitude: b.latitude,
     longitude: b.longitude,
     statut_moderation: b.statut,
@@ -57,8 +65,10 @@ function mapBoutique(b, categorieNom) {
     categorie_nom: categorieNom ?? null,
     image_url: b.logo_url ?? null,
     delai_livraison_min: b.delai_livraison_min ?? 30,
-    livraison_propre: b.livraison_propre === true,
+    livraison_propre: false,
     frais_livraison: Number(b.frais_livraison ?? 500),
+    note_moyenne: b.note_moyenne != null ? Number(b.note_moyenne) : 0,
+    nb_avis: b.nb_avis != null ? Number(b.nb_avis) : 0,
   };
 }
 
@@ -67,6 +77,15 @@ async function loadCategoryName(db, type, categorieId) {
   const table = type === 'restaurant' ? 'categories_restaurants' : 'categories_boutiques';
   const { data } = await db.from(table).select('nom').eq('id', categorieId).maybeSingle();
   return data?.nom ?? null;
+}
+
+async function loadCategoryNamesMap(db, type, categorieIds) {
+  const unique = [...new Set((categorieIds || []).filter(Boolean))];
+  if (unique.length === 0) return new Map();
+  const table = type === 'restaurant' ? 'categories_restaurants' : 'categories_boutiques';
+  const { data, error } = await db.from(table).select('id, nom').in('id', unique);
+  if (error) throw error;
+  return new Map((data || []).map((c) => [c.id, c.nom]));
 }
 
 function canBypassModerationCheck(req, row) {
@@ -82,7 +101,7 @@ function isPubliclyVisible(row) {
 
 async function listEnterprises(req, res, next) {
   try {
-    const { type } = req.query;
+    const { type, categorie_id: categorieId } = req.query;
     const db = getDb();
     const out = [];
 
@@ -93,9 +112,15 @@ async function listEnterprises(req, res, next) {
         .eq('est_ouvert', true)
         .eq('statut', MODERATION.ACTIVE)
         .order('nom', { ascending: true });
+      if (categorieId) q = q.eq('categorie_id', categorieId);
       const { data, error } = await q;
       if (error) throw error;
-      (data || []).forEach((r) => out.push(mapRestaurant(r)));
+      const catMap = await loadCategoryNamesMap(
+        db,
+        'restaurant',
+        (data || []).map((r) => r.categorie_id)
+      );
+      (data || []).forEach((r) => out.push(mapRestaurant(r, catMap.get(r.categorie_id) ?? null)));
     }
 
     if (!type || type === 'boutique') {
@@ -105,9 +130,15 @@ async function listEnterprises(req, res, next) {
         .eq('est_ouvert', true)
         .eq('statut', MODERATION.ACTIVE)
         .order('nom', { ascending: true });
+      if (categorieId) q = q.eq('categorie_id', categorieId);
       const { data, error } = await q;
       if (error) throw error;
-      (data || []).forEach((b) => out.push(mapBoutique(b)));
+      const catMap = await loadCategoryNamesMap(
+        db,
+        'boutique',
+        (data || []).map((b) => b.categorie_id)
+      );
+      (data || []).forEach((b) => out.push(mapBoutique(b, catMap.get(b.categorie_id) ?? null)));
     }
 
     out.sort((a, b) => String(a.nom || '').localeCompare(String(b.nom || '')));
@@ -206,6 +237,7 @@ async function createEnterprise(req, res, next) {
       longitude: longitude ?? null,
       statut,
       est_ouvert: statut === MODERATION.ACTIVE,
+      livraison_propre: false,
       ...logoFields,
     };
 
@@ -231,7 +263,8 @@ async function getEnterpriseById(req, res, next) {
     const { data: resto, error: rErr } = await db.from('restaurants').select('*').eq('id', enterpriseId).maybeSingle();
     if (rErr) throw rErr;
     if (resto) {
-      const mapped = mapRestaurant(resto);
+      const cat = await loadCategoryName(db, 'restaurant', resto.categorie_id);
+      const mapped = mapRestaurant(resto, cat);
       if (isPubliclyVisible(resto) || canBypassModerationCheck(req, resto)) {
         return res.json(mapped);
       }
@@ -241,7 +274,8 @@ async function getEnterpriseById(req, res, next) {
     const { data: bout, error: bErr } = await db.from('boutiques').select('*').eq('id', enterpriseId).maybeSingle();
     if (bErr) throw bErr;
     if (bout) {
-      const mapped = mapBoutique(bout);
+      const cat = await loadCategoryName(db, 'boutique', bout.categorie_id);
+      const mapped = mapBoutique(bout, cat);
       if (isPubliclyVisible(bout) || canBypassModerationCheck(req, bout)) {
         return res.json(mapped);
       }
@@ -254,10 +288,111 @@ async function getEnterpriseById(req, res, next) {
   }
 }
 
+/** Mise à jour profil commerce (propriétaire). */
+async function patchEnterprise(req, res, next) {
+  try {
+    const { enterpriseId } = req.params;
+    const body = req.body || {};
+    const db = getDb();
+
+    const applyPatch = async (table, row) => {
+      if (row.proprietaire_id !== req.auth.userId && req.auth.role !== 'admin') {
+        throw createHttpError(403, 'Action non autorisée.');
+      }
+      const updates = { updated_at: new Date().toISOString() };
+      if (body.nom !== undefined) {
+        const n = String(body.nom || '').trim();
+        if (!n) throw createHttpError(400, 'Le nom ne peut pas être vide.');
+        updates.nom = n;
+      }
+      if (body.description !== undefined) {
+        updates.description = body.description ? String(body.description).trim() : null;
+      }
+      if (body.telephone !== undefined) {
+        const t = String(body.telephone || '').trim();
+        if (!t) throw createHttpError(400, 'Le téléphone est obligatoire.');
+        updates.telephone = t;
+      }
+      if (body.adresse !== undefined || body.adresseQuartier !== undefined) {
+        const ligne1 =
+          body.adresse !== undefined ? String(body.adresse || '').trim() : String(row.adresse_ligne1 || '').trim();
+        const quartier =
+          body.adresseQuartier !== undefined
+            ? String(body.adresseQuartier || '').trim()
+            : String(row.adresse_quartier || '').trim();
+        if (!quartier) {
+          throw createHttpError(400, 'Le quartier (arrondissement) est obligatoire.');
+        }
+        if (ligne1.length < 4) {
+          throw createHttpError(400, 'Adresse détaillée trop courte (minimum 4 caractères).');
+        }
+        updates.adresse_ligne1 = ligne1;
+        updates.adresse_quartier = quartier;
+        updates.latitude = null;
+        updates.longitude = null;
+      }
+      if (body.adresseVille !== undefined) {
+        updates.adresse_ville = String(body.adresseVille || '').trim() || 'Brazzaville';
+      }
+      if (body.latitude !== undefined) {
+        updates.latitude = body.latitude == null || body.latitude === '' ? null : Number(body.latitude);
+      }
+      if (body.longitude !== undefined) {
+        updates.longitude = body.longitude == null || body.longitude === '' ? null : Number(body.longitude);
+      }
+      if (body.livraisonPropre !== undefined) {
+        throw createHttpError(400, 'Les livraisons passent exclusivement par les livreurs GoLivra.');
+      }
+      const logoFields = logoFieldsFromBody(body);
+      Object.assign(updates, logoFields);
+
+      if (Object.keys(updates).length <= 1) {
+        throw createHttpError(400, 'Aucune modification à enregistrer.');
+      }
+
+      const { data, error } = await db.from(table).update(updates).eq('id', enterpriseId).select('*').single();
+      if (error) throw error;
+      return data;
+    };
+
+    const { data: resto } = await db.from('restaurants').select('*').eq('id', enterpriseId).maybeSingle();
+    if (resto) {
+      const data = await applyPatch('restaurants', resto);
+      const cat = await loadCategoryName(db, 'restaurant', data.categorie_id);
+      return res.json(mapRestaurant(data, cat));
+    }
+
+    const { data: bout } = await db.from('boutiques').select('*').eq('id', enterpriseId).maybeSingle();
+    if (bout) {
+      const data = await applyPatch('boutiques', bout);
+      const cat = await loadCategoryName(db, 'boutique', data.categorie_id);
+      return res.json(mapBoutique(data, cat));
+    }
+
+    throw createHttpError(404, 'Commerce introuvable.');
+  } catch (error) {
+    return next(error);
+  }
+}
+
+/** Désactivé : toutes les livraisons passent par GoLivra. */
+async function patchEnterpriseSettings(_req, res, next) {
+  try {
+    throw createHttpError(
+      400,
+      'Les livraisons sont assurées uniquement par les livreurs GoLivra (pas de livraison propre ni externe côté commerce).',
+    );
+  } catch (error) {
+    return next(error);
+  }
+}
+
 module.exports = {
   listEnterprises,
   listCategories,
   getEnterpriseById,
   createEnterprise,
   getMyEnterprises,
+  patchEnterprise,
+  patchEnterpriseSettings,
 };

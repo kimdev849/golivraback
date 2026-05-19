@@ -1,0 +1,2 @@
+-- Référence : tarification dynamique → voir amendments-pricing-percent.sql
+-- Plus aucun montant fixe (1000 / 200 / 800) dans le code applicatif.

@@ -1,6 +1,7 @@
 const express = require('express');
 const {
   getMyCompany,
+  getMyWallet,
   getMyStats,
   getMyOperations,
   getMyDelays,
@@ -32,6 +33,7 @@ const gestionnaireActive = [...gestionnaireBase, requireActiveLogisticsCompany];
 
 router.get('/company', authMiddleware, requireRoles(['gestionnaire_logistique', 'admin']), getMyCompany);
 
+router.get('/wallet', ...gestionnaireBase, getMyWallet);
 router.get('/stats', ...gestionnaireBase, getMyStats);
 router.get('/operations', ...gestionnaireBase, getMyOperations);
 router.get('/retards', ...gestionnaireBase, getMyDelays);
