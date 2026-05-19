@@ -912,6 +912,8 @@ module.exports = {
   listPendingUsers,
   approveUser,
   rejectUser,
+  createCourier,
+  listAdminCouriers,
   listAdminOrders,
   getAdminOrderDetail,
   listLogisticsCompanies,
