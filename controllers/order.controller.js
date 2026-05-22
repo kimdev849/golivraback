@@ -115,14 +115,8 @@ async function createOrder(req, res, next) {
     }
     const db = getDb();
     const { commande, sousCommandes } = await createOrderFromPayload(db, req.auth.userId, req.body);
-    const { notifyUserSafe } = require('../services/notification.service');
-    await notifyUserSafe(db, {
-      utilisateurId: req.auth.userId,
-      type: 'commande_statut',
-      titre: 'Commande créée',
-      corps: 'Finalisez le paiement Mobile Money pour confirmer votre commande.',
-      data: { commande_id: commande.id, action: 'open_orders' },
-    });
+    const { notifyOrderCreated } = require('../services/order-notify.service');
+    await notifyOrderCreated(db, commande.id, req.auth.userId);
     const first = sousCommandes[0];
     const eid = first ? first.restaurant_id || first.boutique_id : null;
     return res.status(201).json({

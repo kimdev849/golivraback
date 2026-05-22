@@ -20,6 +20,7 @@ const notificationRoutes = require('./routes/notification.routes');
 const favoritesRoutes = require('./routes/favorites.routes');
 const cartRoutes = require('./routes/cart.routes');
 const settingsRoutes = require('./routes/settings.routes');
+const promoRoutes = require('./routes/promo.routes');
 const { getDb } = require('./config/db');
 
 const app = express();
@@ -117,6 +118,7 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/favorites', favoritesRoutes);
 app.use('/api/cart', cartRoutes);
 app.use('/api/settings', settingsRoutes);
+app.use('/api/promo', promoRoutes);
 
 function httpErrorCode(status, err) {
   const raw = err.code;

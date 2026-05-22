@@ -39,7 +39,7 @@ function mapRestaurant(r, categorieNom) {
     image_url: r.logo_url ?? null,
     delai_preparation_min: r.delai_preparation_min ?? 20,
       livraison_propre: false,
-    frais_livraison: Number(r.frais_livraison ?? 500),
+    frais_livraison: Number(r.frais_livraison ?? 1000),
     note_moyenne: r.note_moyenne != null ? Number(r.note_moyenne) : 0,
     nb_avis: r.nb_avis != null ? Number(r.nb_avis) : 0,
   };
@@ -66,7 +66,7 @@ function mapBoutique(b, categorieNom) {
     image_url: b.logo_url ?? null,
     delai_livraison_min: b.delai_livraison_min ?? 30,
     livraison_propre: false,
-    frais_livraison: Number(b.frais_livraison ?? 500),
+    frais_livraison: Number(b.frais_livraison ?? 1000),
     note_moyenne: b.note_moyenne != null ? Number(b.note_moyenne) : 0,
     nb_avis: b.nb_avis != null ? Number(b.nb_avis) : 0,
   };
@@ -343,8 +343,12 @@ async function patchEnterprise(req, res, next) {
       if (body.livraisonPropre !== undefined) {
         throw createHttpError(400, 'Les livraisons passent exclusivement par les livreurs GoLivra.');
       }
-      const logoFields = logoFieldsFromBody(body);
-      Object.assign(updates, logoFields);
+      if (body.imageUrl !== undefined || body.imageDataUrl !== undefined) {
+        const logoFields = logoFieldsFromBody(body);
+        if (Object.keys(logoFields).length > 0) {
+          Object.assign(updates, logoFields);
+        }
+      }
 
       if (Object.keys(updates).length <= 1) {
         throw createHttpError(400, 'Aucune modification à enregistrer.');

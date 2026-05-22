@@ -9,39 +9,8 @@ async function payOrder(req, res, next) {
     const db = getDb();
     const result = await payOrderForClient(db, orderId, req.auth.userId, { provider });
     if (!result.deja_valide) {
-      const { notifyUserSafe } = require('../services/notification.service');
-      await notifyUserSafe(db, {
-        utilisateurId: req.auth.userId,
-        type: 'paiement',
-        titre: 'Paiement confirmé',
-        corps: 'Votre commande est confirmée. Le commerce va la préparer.',
-        data: { commande_id: result.commande.id, action: 'open_orders' },
-      });
-
-      const { data: sous } = await db
-        .from('sous_commandes')
-        .select('id, restaurant_id, boutique_id')
-        .eq('commande_id', result.commande.id);
-      const ownerIds = new Set();
-      for (const sc of sous || []) {
-        if (sc.restaurant_id) {
-          const { data: r } = await db.from('restaurants').select('proprietaire_id').eq('id', sc.restaurant_id).maybeSingle();
-          if (r?.proprietaire_id) ownerIds.add(r.proprietaire_id);
-        }
-        if (sc.boutique_id) {
-          const { data: b } = await db.from('boutiques').select('proprietaire_id').eq('id', sc.boutique_id).maybeSingle();
-          if (b?.proprietaire_id) ownerIds.add(b.proprietaire_id);
-        }
-      }
-      for (const ownerId of ownerIds) {
-        await notifyUserSafe(db, {
-          utilisateurId: ownerId,
-          type: 'commande_statut',
-          titre: 'Nouvelle commande payée',
-          corps: 'Un client vient de payer une commande. Consultez vos commandes.',
-          data: { commande_id: result.commande.id, action: 'vendor_orders' },
-        });
-      }
+      const { notifyPaymentConfirmed } = require('../services/order-notify.service');
+      await notifyPaymentConfirmed(db, result.commande.id, req.auth.userId);
     }
     return res.json({
       ok: true,

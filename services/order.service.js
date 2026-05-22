@@ -161,7 +161,8 @@ async function buildLinesForSegment(db, kind, entrepriseId, articles) {
  * Une commande parente + une sous-commande par commerce (panier multi-segments).
  */
 async function createOrderFromPayload(db, clientId, payload) {
-  const { methodePaiement, noteClient, segments, entrepriseId, establishmentType, articles } = payload;
+  const { methodePaiement, noteClient, segments, entrepriseId, establishmentType, articles, codePromo } =
+    payload;
 
   const { snap: addrSnap, id: adresseLivraisonId } = await resolveDeliveryAddress(db, clientId, payload);
 
@@ -216,7 +217,26 @@ async function createOrderFromPayload(db, clientId, payload) {
     });
   }
 
-  const orderTotal = orderSubtotal + deliveryTotal;
+  let remiseTotale = 0;
+  let codePromoUtilise = null;
+  let codePromoId = null;
+
+  if (codePromo) {
+    const { validatePromoCode } = require('./promo.service');
+    const validated = await validatePromoCode(db, clientId, codePromo, {
+      orderSubtotal,
+      deliveryTotal,
+      segments: segmentList.map((s) => ({
+        entrepriseId: s.entrepriseId,
+        establishmentType: s.establishmentType,
+      })),
+    });
+    remiseTotale = validated.remise;
+    codePromoUtilise = validated.code;
+    codePromoId = validated.code_promo_id;
+  }
+
+  const orderTotal = Math.max(0, orderSubtotal + deliveryTotal - remiseTotale);
 
   const { data: commande, error: cErr } = await db
     .from('commandes')
@@ -227,7 +247,8 @@ async function createOrderFromPayload(db, clientId, payload) {
       statut: 'en_attente',
       sous_total: orderSubtotal,
       frais_livraison_total: deliveryTotal,
-      remise_totale: 0,
+      remise_totale: remiseTotale,
+      code_promo_utilise: codePromoUtilise,
       total: orderTotal,
       methode_paiement: methode,
       note_client: noteClient || null,
@@ -264,6 +285,22 @@ async function createOrderFromPayload(db, clientId, payload) {
     if (iErr) throw iErr;
 
     sousCommandes.push(sous);
+  }
+
+  if (codePromoId && remiseTotale > 0) {
+    const { recordPromoUsage } = require('./promo.service');
+    await recordPromoUsage(db, {
+      codePromoId,
+      utilisateurId: clientId,
+      commandeId: commande.id,
+      montantRemise: remiseTotale,
+    });
+    const { notifyPromoApplied } = require('./order-notify.service');
+    await notifyPromoApplied(db, clientId, {
+      code: codePromoUtilise,
+      remise: remiseTotale,
+      commandeId: commande.id,
+    });
   }
 
   await db.from('paiements').insert({
@@ -356,6 +393,15 @@ async function updateSousCommandeStatut(db, sousCommandeId, statut, extra = {}) 
   }
 
   await syncCommandeStatutFromSousCommandes(db, sc.commande_id);
+
+  const notifyStatuses = new Set(['acceptee', 'refusee', 'en_preparation', 'prete']);
+  if (notifyStatuses.has(statut)) {
+    const { notifySousCommandeStatusChange } = require('./order-notify.service');
+    await notifySousCommandeStatusChange(db, sousCommandeId, statut).catch((err) => {
+      console.warn('[notify] sous-commande statut', statut, err?.message || err);
+    });
+  }
+
   return updated;
 }
 

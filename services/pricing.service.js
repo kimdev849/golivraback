@@ -11,6 +11,7 @@ const CONFIG_KEYS = [
   'frais_livraison_base_fcfa',
   'frais_livraison_min_fcfa',
   'frais_livraison_max_fcfa',
+  'montant_min_commande_fcfa',
   'payment_test_min_fcfa',
   'payment_test_max_fcfa',
 ];
@@ -23,6 +24,7 @@ const ENV_MAP = {
   frais_livraison_base_fcfa: 'FRAIS_LIVRAISON_BASE_FCFA',
   frais_livraison_min_fcfa: 'FRAIS_LIVRAISON_MIN_FCFA',
   frais_livraison_max_fcfa: 'FRAIS_LIVRAISON_MAX_FCFA',
+  montant_min_commande_fcfa: 'MONTANT_MIN_COMMANDE_FCFA',
   payment_test_min_fcfa: 'PAYMENT_TEST_MIN_FCFA',
   payment_test_max_fcfa: 'PAYMENT_TEST_MAX_FCFA',
 };
@@ -33,9 +35,10 @@ const DEFAULTS = {
   merchant_percent: 100,
   delivery_platform_percent: 20,
   delivery_logistics_percent: 80,
-  frais_livraison_base_fcfa: 500,
-  frais_livraison_min_fcfa: 200,
-  frais_livraison_max_fcfa: 500,
+  frais_livraison_base_fcfa: 1000,
+  frais_livraison_min_fcfa: 1000,
+  frais_livraison_max_fcfa: 2500,
+  montant_min_commande_fcfa: 1000,
   payment_test_min_fcfa: 1000,
   payment_test_max_fcfa: 2000,
 };
@@ -79,6 +82,7 @@ function normalizeConfig(raw) {
     ),
     frais_livraison_min_fcfa: parseNumber(raw.frais_livraison_min_fcfa, DEFAULTS.frais_livraison_min_fcfa),
     frais_livraison_max_fcfa: parseNumber(raw.frais_livraison_max_fcfa, DEFAULTS.frais_livraison_max_fcfa),
+    montant_min_commande_fcfa: parseNumber(raw.montant_min_commande_fcfa, DEFAULTS.montant_min_commande_fcfa),
     payment_test_min_fcfa: parseNumber(raw.payment_test_min_fcfa, DEFAULTS.payment_test_min_fcfa),
     payment_test_max_fcfa: parseNumber(raw.payment_test_max_fcfa, DEFAULTS.payment_test_max_fcfa),
   };
@@ -153,14 +157,20 @@ function splitDeliveryFee(fraisLivraison, config) {
   return { logistics, platform, total: frais };
 }
 
-/** Frais de livraison : priorité au commerce, sinon paramètre système. */
+/** Frais de livraison : commerce si ≥ minimum plateforme, sinon tarif de base. */
 async function resolveDeliveryFeeForEstablishment(db, establishmentRow) {
   const config = await getPricingConfig(db);
+  const min = Math.round(config.frais_livraison_min_fcfa);
+  const base = Math.round(config.frais_livraison_base_fcfa);
+  const max = Math.round(config.frais_livraison_max_fcfa);
   const fromEst = Number(establishmentRow?.frais_livraison);
   if (Number.isFinite(fromEst) && fromEst > 0) {
-    return Math.round(fromEst);
+    const fee = Math.round(fromEst);
+    if (fee < min) return base;
+    if (fee > max) return max;
+    return fee;
   }
-  return Math.round(config.frais_livraison_base_fcfa);
+  return base;
 }
 
 /** Montant aléatoire DEV (test split) — uniquement si PAYMENT_TEST_RANDOMIZE=1. */
@@ -182,6 +192,7 @@ function getPublicPricingSnapshot(config) {
     frais_livraison_base_fcfa: config.frais_livraison_base_fcfa,
     frais_livraison_min_fcfa: config.frais_livraison_min_fcfa,
     frais_livraison_max_fcfa: config.frais_livraison_max_fcfa,
+    montant_min_commande_fcfa: config.montant_min_commande_fcfa,
   };
 }
 

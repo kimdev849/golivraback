@@ -85,11 +85,15 @@ async function listPendingReviews(req, res, next) {
 async function submitReview(req, res, next) {
   try {
     requireFields(req.body, ['sousCommandeId', 'note']);
-    const { sousCommandeId, note: noteRaw } = req.body;
+    const { sousCommandeId, note: noteRaw, commentaire: commentaireRaw } = req.body;
     const note = parseNote(noteRaw);
     if (note == null) {
       throw createHttpError(400, 'La note doit être un entier entre 1 et 5.');
     }
+    const commentaire =
+      commentaireRaw != null && String(commentaireRaw).trim()
+        ? String(commentaireRaw).trim().slice(0, 500)
+        : null;
 
     const db = getDb();
     const clientId = req.auth.userId;
@@ -120,7 +124,7 @@ async function submitReview(req, res, next) {
       client_id: clientId,
       sous_commande_id: sc.id,
       note,
-      commentaire: null,
+      commentaire,
     };
 
     if (sc.restaurant_id) {

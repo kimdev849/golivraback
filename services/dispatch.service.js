@@ -252,7 +252,72 @@ async function acceptOpenDelivery(db, livraisonId, livreurId) {
     throw createHttpError(409, 'Cette course a déjà été acceptée par un autre livreur.');
   }
 
+  const { notifyDeliveryAccepted } = require('./order-notify.service');
+  await notifyDeliveryAccepted(db, livraisonId).catch((err) => {
+    console.warn('[notify] delivery accepted', livraisonId, err?.message || err);
+  });
+
   return data;
+}
+
+const COURIER_STEP_TRANSITIONS = {
+  attribuee: 'en_collecte',
+  en_collecte: 'en_route',
+};
+
+/**
+ * Avance le statut livraison (collecte → en route) et synchronise la sous-commande.
+ */
+async function advanceCourierDeliveryStep(db, livraisonId, livreurId) {
+  const { data: liv, error } = await db
+    .from('livraisons')
+    .select('*')
+    .eq('id', livraisonId)
+    .eq('livreur_id', livreurId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!liv) throw createHttpError(404, 'Livraison introuvable pour ce livreur.');
+
+  const next = COURIER_STEP_TRANSITIONS[liv.statut];
+  if (!next) {
+    throw createHttpError(400, 'Aucune étape suivante pour cette livraison.');
+  }
+
+  const now = new Date().toISOString();
+  const patch = { statut: next, updated_at: now };
+  if (next === 'en_route') patch.collectee_at = now;
+
+  const { data: updated, error: uErr } = await db
+    .from('livraisons')
+    .update(patch)
+    .eq('id', livraisonId)
+    .eq('livreur_id', livreurId)
+    .select('*')
+    .single();
+  if (uErr || !updated) throw createHttpError(409, 'Impossible de mettre à jour la livraison.');
+
+  if (liv.sous_commande_id && next === 'en_collecte') {
+    await db
+      .from('sous_commandes')
+      .update({ statut: 'collectee', collectee_at: now, updated_at: now })
+      .eq('id', liv.sous_commande_id);
+    const { data: sc } = await db
+      .from('sous_commandes')
+      .select('commande_id')
+      .eq('id', liv.sous_commande_id)
+      .maybeSingle();
+    if (sc?.commande_id) {
+      const { syncCommandeStatutFromSousCommandes } = require('./order.service');
+      await syncCommandeStatutFromSousCommandes(db, sc.commande_id);
+    }
+  }
+
+  const { notifyDeliveryStep } = require('./order-notify.service');
+  await notifyDeliveryStep(db, livraisonId, next).catch((err) => {
+    console.warn('[notify] delivery step', next, err?.message || err);
+  });
+
+  return updated;
 }
 
 /** Assignation automatique d’un livreur GoLivra (règle métier principale). */
@@ -363,6 +428,11 @@ async function completeLivraisonAndSync(db, livraisonId, livreurId) {
     console.error('[wallet] settleDeliveryFeesOnComplete', livraisonId, err?.message || err);
   });
 
+  const { notifyDeliveryCompleted } = require('./order-notify.service');
+  await notifyDeliveryCompleted(db, livraisonId).catch((err) => {
+    console.warn('[notify] delivery completed', livraisonId, err?.message || err);
+  });
+
   return data;
 }
 
@@ -375,6 +445,7 @@ module.exports = {
   listAvailableCouriers,
   listOpenDeliveries,
   acceptOpenDelivery,
+  advanceCourierDeliveryStep,
   completeLivraisonAndSync,
   courierHasActiveMission,
   getBusyCourierIds,

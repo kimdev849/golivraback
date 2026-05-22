@@ -409,6 +409,20 @@ async function acceptDelivery(req, res, next) {
   }
 }
 
+async function advanceDelivery(req, res, next) {
+  try {
+    const { deliveryId } = req.params;
+    const db = getDb();
+    const courierId = await getLivreurIdForUser(db, req.auth.userId);
+
+    const { advanceCourierDeliveryStep } = require('../services/dispatch.service');
+    const data = await advanceCourierDeliveryStep(db, deliveryId, courierId);
+    return res.json(await mapCourierMissionRow(db, data));
+  } catch (error) {
+    return next(error);
+  }
+}
+
 async function completeDelivery(req, res, next) {
   try {
     const { deliveryId } = req.params;
@@ -430,5 +444,6 @@ module.exports = {
   updateCourierAvailability,
   updateCourierPosition,
   acceptDelivery,
+  advanceDelivery,
   completeDelivery,
 };

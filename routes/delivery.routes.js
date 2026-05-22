@@ -8,6 +8,7 @@ const {
   updateCourierAvailability,
   updateCourierPosition,
   acceptDelivery,
+  advanceDelivery,
   completeDelivery,
 } = require('../controllers/delivery.controller');
 const {
@@ -35,6 +36,7 @@ router.get('/courier/missions', authMiddleware, requireRoles(['livreur', 'admin'
 router.patch('/courier/availability', authMiddleware, requireRoles(['livreur', 'admin']), updateCourierAvailability);
 router.post('/courier/position', authMiddleware, requireRoles(['livreur', 'admin']), updateCourierPosition);
 router.post('/courier/accept/:deliveryId', authMiddleware, requireRoles(['livreur', 'admin']), acceptDelivery);
+router.post('/courier/advance/:deliveryId', authMiddleware, requireRoles(['livreur', 'admin']), advanceDelivery);
 router.post('/courier/complete/:deliveryId', authMiddleware, requireRoles(['livreur', 'admin']), completeDelivery);
 
 module.exports = router;

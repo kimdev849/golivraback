@@ -70,7 +70,8 @@ function logoFieldsFromBody(body) {
     }
     return { logo_url: null, logo, logo_mime: contentType };
   }
-  return { logo_url: null, logo: null, logo_mime: null };
+  /** Ne pas toucher au logo existant si aucune image n’est envoyée. */
+  return {};
 }
 
 function productImageFieldsFromBody(body) {
