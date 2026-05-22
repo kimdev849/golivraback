@@ -400,6 +400,26 @@ async function updateCourierPosition(req, res, next) {
   }
 }
 
+function mapCourierMissionRowMinimal(liv) {
+  const addr =
+    liv.adresse_livraison_snapshot && typeof liv.adresse_livraison_snapshot === 'object'
+      ? String(liv.adresse_livraison_snapshot.texte || '')
+      : '';
+  return {
+    id: liv.id,
+    statut: liv.statut,
+    type_livraison: liv.type_livraison || 'commande',
+    sous_commande_id: liv.sous_commande_id || null,
+    created_at: liv.created_at,
+    attribuee_at: liv.attribuee_at || liv.assigne_le || null,
+    livree_at: liv.livree_at || liv.livre_le || null,
+    adresse_livraison: addr,
+    adresse_retrait: '',
+    commande: null,
+    ouverte: false,
+  };
+}
+
 async function acceptDelivery(req, res, next) {
   try {
     const { deliveryId } = req.params;
@@ -408,7 +428,12 @@ async function acceptDelivery(req, res, next) {
 
     const { acceptOpenDelivery } = require('../services/dispatch.service');
     const data = await acceptOpenDelivery(db, deliveryId, courierId);
-    return res.json(await mapCourierMissionRow(db, data));
+    try {
+      return res.json(await mapCourierMissionRow(db, data));
+    } catch (mapErr) {
+      console.warn('[courier] mapCourierMissionRow', mapErr?.message || mapErr);
+      return res.json(mapCourierMissionRowMinimal(data));
+    }
   } catch (error) {
     return next(error);
   }
@@ -422,7 +447,12 @@ async function advanceDelivery(req, res, next) {
 
     const { advanceCourierDeliveryStep } = require('../services/dispatch.service');
     const data = await advanceCourierDeliveryStep(db, deliveryId, courierId);
-    return res.json(await mapCourierMissionRow(db, data));
+    try {
+      return res.json(await mapCourierMissionRow(db, data));
+    } catch (mapErr) {
+      console.warn('[courier] mapCourierMissionRow advance', mapErr?.message || mapErr);
+      return res.json(mapCourierMissionRowMinimal(data));
+    }
   } catch (error) {
     return next(error);
   }
@@ -436,7 +466,12 @@ async function completeDelivery(req, res, next) {
 
     const { completeLivraisonAndSync } = require('../services/dispatch.service');
     const data = await completeLivraisonAndSync(db, deliveryId, courierId);
-    return res.json(await mapCourierMissionRow(db, data));
+    try {
+      return res.json(await mapCourierMissionRow(db, data));
+    } catch (mapErr) {
+      console.warn('[courier] mapCourierMissionRow complete', mapErr?.message || mapErr);
+      return res.json(mapCourierMissionRowMinimal(data));
+    }
   } catch (error) {
     return next(error);
   }

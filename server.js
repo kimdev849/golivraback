@@ -136,28 +136,14 @@ function httpErrorCode(status, err) {
 }
 
 app.use((err, _req, res, _next) => {
-  const status = err.status || err.statusCode || 500;
-  let message = err.message || 'Erreur interne du serveur';
-  let code = httpErrorCode(status, err);
+  const { normalizeSupabaseError } = require('./utils/supabase-errors');
+  const normalized = normalizeSupabaseError(err);
+  const status = normalized.status;
+  const message = normalized.message;
+  const code = normalized.code || httpErrorCode(status, err);
 
-  if (!err.status && !err.statusCode && err.code) {
-    if (err.code === 'PGRST116') {
-      message =
-        'Données en double détectées (plusieurs livraisons pour la même commande). Réessayez ou contactez le support.';
-      code = 'DONNEES_DUPLICATES';
-    } else if (err.code === '23505') {
-      message = 'Cette ressource existe déjà (contrainte d’unicité).';
-      code = 'CONFLIT_DONNEES';
-    } else if (err.code === '23503') {
-      message = 'Référence invalide : enregistrement lié introuvable.';
-      code = 'REFERENCE_INVALIDE';
-    } else if (String(err.code).startsWith('23')) {
-      message = 'Les données envoyées ne respectent pas les contraintes de la base.';
-      code = 'DONNEES_INVALIDES';
-    } else if (status >= 500) {
-      message = 'Erreur lors de l’accès aux données.';
-      code = 'ERREUR_BASE';
-    }
+  if (process.env.NODE_ENV !== 'production' && err?.code) {
+    console.error('[API]', err.code, err.message, err.details || '');
   }
 
   res.status(status).json({ message, code });

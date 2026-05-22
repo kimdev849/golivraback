@@ -19,14 +19,21 @@ async function findLivraisonBySousCommande(db, sousCommandeId) {
 /** Annule les doublons « en attente » pour la même sous-commande (garde keepId). */
 async function cancelDuplicateOpenLivraisons(db, sousCommandeId, keepId) {
   if (!sousCommandeId || !keepId) return;
-  const now = new Date().toISOString();
-  const { error } = await db
+  let { error } = await db
     .from('livraisons')
-    .update({ statut: 'annulee', updated_at: now })
+    .update({ statut: 'annulee' })
     .eq('sous_commande_id', sousCommandeId)
     .eq('statut', 'en_attente')
     .is('livreur_id', null)
     .neq('id', keepId);
+  if (error && String(error.code) === '42703') {
+    ({ error } = await db
+      .from('livraisons')
+      .update({ statut: 'annulee' })
+      .eq('sous_commande_id', sousCommandeId)
+      .eq('statut', 'en_attente')
+      .neq('id', keepId));
+  }
   if (error) throw error;
 }
 
@@ -244,7 +251,20 @@ async function listOpenDeliveries(db) {
     .eq('statut', 'en_attente')
     .order('created_at', { ascending: true });
   if (error) throw error;
-  return livraisons || [];
+  const deduped = dedupeOpenDeliveries(livraisons || []);
+  const sousIds = [...new Set(deduped.map((r) => r.sous_commande_id).filter(Boolean))];
+  if (sousIds.length === 0) return deduped;
+
+  const { data: taken, error: tErr } = await db
+    .from('livraisons')
+    .select('sous_commande_id')
+    .in('sous_commande_id', sousIds)
+    .not('livreur_id', 'is', null)
+    .not('statut', 'eq', 'annulee');
+  if (tErr) return deduped;
+
+  const takenSous = new Set((taken || []).map((t) => t.sous_commande_id));
+  return deduped.filter((r) => !r.sous_commande_id || !takenSous.has(r.sous_commande_id));
 }
 
 /**
@@ -263,16 +283,28 @@ async function onSousCommandeReady(db, sousCommandeId) {
 
 /** Premier livreur qui accepte obtient la course (secours si assignation auto impossible). */
 async function acceptOpenDelivery(db, livraisonId, livreurId) {
-  const { data: livreur, error: lErr } = await db
+  const { acceptLivraisonForCourier } = require('./livraison-db');
+
+  const { isMissingColumnError } = require('./livraison-db');
+  let livreur;
+  let lErr;
+  ({ data: livreur, error: lErr } = await db
     .from('livreurs')
     .select('id, est_disponible, est_approuve, entreprise_logistique_id, utilisateur_id, disponibilite_bloquee_entreprise')
     .eq('id', livreurId)
-    .maybeSingle();
+    .maybeSingle());
+  if (lErr && isMissingColumnError(lErr)) {
+    ({ data: livreur, error: lErr } = await db
+      .from('livreurs')
+      .select('id, est_disponible, est_approuve, entreprise_logistique_id, utilisateur_id')
+      .eq('id', livreurId)
+      .maybeSingle());
+  }
   if (lErr) throw lErr;
   if (!livreur) throw createHttpError(404, 'Livreur introuvable.');
   if (!livreur.est_disponible) throw createHttpError(403, 'Activez « recevoir des courses » pour accepter.');
   if (!livreur.est_approuve) throw createHttpError(403, 'Profil livreur non approuvé.');
-  if (livreur.disponibilite_bloquee_entreprise) {
+  if (livreur.disponibilite_bloquee_entreprise === true) {
     throw createHttpError(403, 'Votre disponibilité est gérée par votre entreprise logistique.');
   }
 
@@ -287,25 +319,7 @@ async function acceptOpenDelivery(db, livraisonId, livreurId) {
     throw createHttpError(409, 'Terminez votre course en cours avant d’en accepter une autre.');
   }
 
-  const now = new Date().toISOString();
-  const { data, error } = await db
-    .from('livraisons')
-    .update({
-      livreur_id: livreurId,
-      entreprise_logistique_id: livreur.entreprise_logistique_id || null,
-      statut: 'attribuee',
-      attribuee_at: now,
-    })
-    .eq('id', livraisonId)
-    .is('livreur_id', null)
-    .eq('statut', 'en_attente')
-    .select('*')
-    .maybeSingle();
-
-  if (error) throw error;
-  if (!data) {
-    throw createHttpError(409, 'Cette course a déjà été acceptée par un autre livreur.');
-  }
+  const data = await acceptLivraisonForCourier(db, livraisonId, livreur);
 
   if (data.sous_commande_id) {
     await cancelDuplicateOpenLivraisons(db, data.sous_commande_id, data.id).catch(() => {});
@@ -328,6 +342,8 @@ const COURIER_STEP_TRANSITIONS = {
  * Avance le statut livraison (collecte → en route) et synchronise la sous-commande.
  */
 async function advanceCourierDeliveryStep(db, livraisonId, livreurId) {
+  const { advanceLivraisonStatut, isMissingColumnError } = require('./livraison-db');
+
   const { data: liv, error } = await db
     .from('livraisons')
     .select('*')
@@ -343,23 +359,22 @@ async function advanceCourierDeliveryStep(db, livraisonId, livreurId) {
   }
 
   const now = new Date().toISOString();
-  const patch = { statut: next, updated_at: now };
-  if (next === 'en_route') patch.collectee_at = now;
-
-  const { data: updated, error: uErr } = await db
-    .from('livraisons')
-    .update(patch)
-    .eq('id', livraisonId)
-    .eq('livreur_id', livreurId)
-    .select('*')
-    .single();
-  if (uErr || !updated) throw createHttpError(409, 'Impossible de mettre à jour la livraison.');
+  const extra = next === 'en_route' ? { collectee_at: now } : {};
+  const updated = await advanceLivraisonStatut(db, livraisonId, livreurId, next, extra);
 
   if (liv.sous_commande_id && next === 'en_collecte') {
-    await db
+    let scErr = null;
+    ({ error: scErr } = await db
       .from('sous_commandes')
       .update({ statut: 'collectee', collectee_at: now, updated_at: now })
-      .eq('id', liv.sous_commande_id);
+      .eq('id', liv.sous_commande_id));
+    if (scErr && isMissingColumnError(scErr)) {
+      ({ error: scErr } = await db
+        .from('sous_commandes')
+        .update({ statut: 'collectee' })
+        .eq('id', liv.sous_commande_id));
+    }
+    if (scErr) throw scErr;
     const { data: sc } = await db
       .from('sous_commandes')
       .select('commande_id')
@@ -441,24 +456,23 @@ async function assignLivreurToLivraison(db, livraisonId, livreurId, { source } =
 }
 
 async function completeLivraisonAndSync(db, livraisonId, livreurId) {
+  const { completeLivraisonRow, isMissingColumnError } = require('./livraison-db');
   const now = new Date().toISOString();
-  const { data, error } = await db
-    .from('livraisons')
-    .update({
-      statut: 'livree',
-      livree_at: now,
-    })
-    .eq('id', livraisonId)
-    .eq('livreur_id', livreurId)
-    .select('*')
-    .single();
-  if (error || !data) throw createHttpError(404, 'Livraison introuvable pour ce livreur');
+  const data = await completeLivraisonRow(db, livraisonId, livreurId);
 
   if (data.sous_commande_id) {
-    await db
+    let scErr = null;
+    ({ error: scErr } = await db
       .from('sous_commandes')
       .update({ statut: 'livree', livree_at: now, updated_at: now })
-      .eq('id', data.sous_commande_id);
+      .eq('id', data.sous_commande_id));
+    if (scErr && isMissingColumnError(scErr)) {
+      ({ error: scErr } = await db
+        .from('sous_commandes')
+        .update({ statut: 'livree' })
+        .eq('id', data.sous_commande_id));
+    }
+    if (scErr) throw scErr;
 
     const { data: sc } = await db
       .from('sous_commandes')
