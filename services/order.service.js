@@ -238,6 +238,28 @@ async function createOrderFromPayload(db, clientId, payload) {
 
   const orderTotal = Math.max(0, orderSubtotal + deliveryTotal - remiseTotale);
 
+  const since = new Date(Date.now() - 90_000).toISOString();
+  const { data: recentOrders, error: recentErr } = await db
+    .from('commandes')
+    .select('id, total, statut, created_at')
+    .eq('client_id', clientId)
+    .gte('created_at', since)
+    .order('created_at', { ascending: false })
+    .limit(3);
+  if (recentErr) throw recentErr;
+  const duplicate = (recentOrders || []).find(
+    (c) =>
+      Number(c.total) === orderTotal &&
+      ['en_attente', 'partiellement_acceptee', 'acceptee', 'en_preparation', 'prete'].includes(c.statut),
+  );
+  if (duplicate) {
+    const { data: full, error: fullErr } = await db.from('commandes').select('*').eq('id', duplicate.id).single();
+    if (fullErr) throw fullErr;
+    const { data: scs, error: scErr } = await db.from('sous_commandes').select('*').eq('commande_id', duplicate.id);
+    if (scErr) throw scErr;
+    return { commande: full, sousCommandes: scs || [], dejaExistante: true };
+  }
+
   const { data: commande, error: cErr } = await db
     .from('commandes')
     .insert({

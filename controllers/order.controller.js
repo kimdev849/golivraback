@@ -114,9 +114,11 @@ async function createOrder(req, res, next) {
       throw createHttpError(400, 'Choisissez Airtel Money ou MTN Mobile Money.');
     }
     const db = getDb();
-    const { commande, sousCommandes } = await createOrderFromPayload(db, req.auth.userId, req.body);
-    const { notifyOrderCreated } = require('../services/order-notify.service');
-    await notifyOrderCreated(db, commande.id, req.auth.userId);
+    const { commande, sousCommandes, dejaExistante } = await createOrderFromPayload(db, req.auth.userId, req.body);
+    if (!dejaExistante) {
+      const { notifyOrderCreated } = require('../services/order-notify.service');
+      await notifyOrderCreated(db, commande.id, req.auth.userId);
+    }
     const first = sousCommandes[0];
     const eid = first ? first.restaurant_id || first.boutique_id : null;
     return res.status(201).json({

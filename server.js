@@ -141,7 +141,11 @@ app.use((err, _req, res, _next) => {
   let code = httpErrorCode(status, err);
 
   if (!err.status && !err.statusCode && err.code) {
-    if (err.code === '23505') {
+    if (err.code === 'PGRST116') {
+      message =
+        'Données en double détectées (plusieurs livraisons pour la même commande). Réessayez ou contactez le support.';
+      code = 'DONNEES_DUPLICATES';
+    } else if (err.code === '23505') {
       message = 'Cette ressource existe déjà (contrainte d’unicité).';
       code = 'CONFLIT_DONNEES';
     } else if (err.code === '23503') {

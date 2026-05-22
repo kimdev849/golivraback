@@ -81,12 +81,14 @@ async function mapCourierMissionRow(db, liv) {
       .maybeSingle();
     commande = c;
   }
+  let commerceNom = null;
   if (sc?.restaurant_id) {
     const { data: r } = await db
       .from('restaurants')
       .select('nom, adresse_ligne1')
       .eq('id', sc.restaurant_id)
       .maybeSingle();
+    commerceNom = r?.nom ?? null;
     adresseRetrait = r?.adresse_ligne1 || r?.nom || '';
   }
   if (sc?.boutique_id) {
@@ -95,6 +97,7 @@ async function mapCourierMissionRow(db, liv) {
       .select('nom, adresse_ligne1')
       .eq('id', sc.boutique_id)
       .maybeSingle();
+    commerceNom = b?.nom ?? null;
     adresseRetrait = b?.adresse_ligne1 || b?.nom || '';
   }
 
@@ -102,11 +105,13 @@ async function mapCourierMissionRow(db, liv) {
     id: liv.id,
     statut: liv.statut,
     type_livraison: 'commande',
+    sous_commande_id: liv.sous_commande_id,
     created_at: liv.created_at,
     attribuee_at: liv.attribuee_at,
     livree_at: liv.livree_at,
     adresse_livraison: deliveryAddressFromSnapshot(liv.adresse_livraison_snapshot),
     adresse_retrait: adresseRetrait,
+    commerce_nom: commerceNom,
     commande,
   };
 }

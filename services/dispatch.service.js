@@ -4,6 +4,53 @@ const { getPricingConfig, splitDeliveryFee } = require('./pricing.service');
 const ACTIVE_MISSION_STATUTS = ['attribuee', 'en_collecte', 'collectee', 'en_route'];
 const { formatAddressText } = require('./address.service');
 
+/** Une seule livraison active par sous-commande (évite erreurs maybeSingle + doublons livreur). */
+async function findLivraisonBySousCommande(db, sousCommandeId) {
+  const { data, error } = await db
+    .from('livraisons')
+    .select('*')
+    .eq('sous_commande_id', sousCommandeId)
+    .order('created_at', { ascending: true })
+    .limit(1);
+  if (error) throw error;
+  return data?.[0] ?? null;
+}
+
+/** Annule les doublons « en attente » pour la même sous-commande (garde keepId). */
+async function cancelDuplicateOpenLivraisons(db, sousCommandeId, keepId) {
+  if (!sousCommandeId || !keepId) return;
+  const now = new Date().toISOString();
+  const { error } = await db
+    .from('livraisons')
+    .update({ statut: 'annulee', updated_at: now })
+    .eq('sous_commande_id', sousCommandeId)
+    .eq('statut', 'en_attente')
+    .is('livreur_id', null)
+    .neq('id', keepId);
+  if (error) throw error;
+}
+
+function dedupeOpenDeliveries(rows) {
+  const bySous = new Map();
+  const externe = [];
+  for (const liv of rows || []) {
+    if (!liv.sous_commande_id) {
+      externe.push(liv);
+      continue;
+    }
+    const key = liv.sous_commande_id;
+    const prev = bySous.get(key);
+    if (!prev) {
+      bySous.set(key, liv);
+      continue;
+    }
+    const prevTs = new Date(prev.created_at || 0).getTime();
+    const curTs = new Date(liv.created_at || 0).getTime();
+    if (curTs < prevTs) bySous.set(key, liv);
+  }
+  return [...externe, ...bySous.values()];
+}
+
 /** Crée la livraison interne quand la sous-commande passe « prête », puis assigne un livreur GoLivra. */
 async function ensureLivraisonOnSousCommandeReady(db, sousCommandeId) {
   const { data: sc, error: scErr } = await db
@@ -18,13 +65,13 @@ async function ensureLivraisonOnSousCommandeReady(db, sousCommandeId) {
     return null;
   }
 
-  const { data: existing, error: exErr } = await db
-    .from('livraisons')
-    .select('*')
-    .eq('sous_commande_id', sousCommandeId)
-    .maybeSingle();
-  if (exErr) throw exErr;
-  if (existing) return existing;
+  const existing = await findLivraisonBySousCommande(db, sousCommandeId);
+  if (existing) {
+    if (existing.id) {
+      await cancelDuplicateOpenLivraisons(db, sousCommandeId, existing.id).catch(() => {});
+    }
+    return existing;
+  }
 
   const { data: commande, error: cErr } = await db
     .from('commandes')
@@ -69,7 +116,15 @@ async function ensureLivraisonOnSousCommandeReady(db, sousCommandeId) {
     })
     .select('*')
     .single();
-  if (insErr) throw insErr;
+  if (insErr) {
+    if (insErr.code === '23505') {
+      const again = await findLivraisonBySousCommande(db, sousCommandeId);
+      if (again) return again;
+    }
+    throw insErr;
+  }
+
+  await cancelDuplicateOpenLivraisons(db, sousCommandeId, created.id).catch(() => {});
 
   return created;
 }
@@ -250,6 +305,10 @@ async function acceptOpenDelivery(db, livraisonId, livreurId) {
   if (error) throw error;
   if (!data) {
     throw createHttpError(409, 'Cette course a déjà été acceptée par un autre livreur.');
+  }
+
+  if (data.sous_commande_id) {
+    await cancelDuplicateOpenLivraisons(db, data.sous_commande_id, data.id).catch(() => {});
   }
 
   const { notifyDeliveryAccepted } = require('./order-notify.service');
