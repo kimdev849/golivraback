@@ -71,3 +71,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_livraisons_sous_commande_active
 CREATE INDEX IF NOT EXISTS idx_livraisons_open
   ON livraisons (statut, created_at)
   WHERE livreur_id IS NULL AND statut = 'en_attente';
+
+-- Legacy (schema.sql) : garder assigne_le / livre_le si la base est ancienne
+ALTER TABLE livraisons
+  ADD COLUMN IF NOT EXISTS assigne_le TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS livre_le TIMESTAMPTZ;
+
+-- Recharge le cache PostgREST après ALTER (sinon l’API voit encore d’anciennes colonnes)
+NOTIFY pgrst, 'reload schema';

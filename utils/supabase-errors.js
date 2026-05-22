@@ -1,6 +1,30 @@
 /**
  * Messages lisibles pour erreurs Supabase / PostgreSQL (évite « Erreur lors de l'accès aux données »).
  */
+
+const SCHEMA_COLUMN_CODES = new Set(['42703', 'PGRST204']);
+
+function parseMissingColumn(error) {
+  const raw = String(error?.message || '');
+  const details = String(error?.details || error?.hint || '');
+  const combined = `${raw} ${details}`;
+
+  const pgrst = combined.match(/Could not find the ['"](\w+)['"] column of/i);
+  if (pgrst) return pgrst[1];
+
+  const pgQuoted = combined.match(/column ["'](\w+)["']/i);
+  if (pgQuoted) return pgQuoted[1];
+
+  return null;
+}
+
+function isMissingColumnError(error) {
+  if (!error) return false;
+  if (SCHEMA_COLUMN_CODES.has(String(error.code || ''))) return true;
+  const msg = String(error.message || '').toLowerCase();
+  return msg.includes('could not find') && msg.includes('column');
+}
+
 function normalizeSupabaseError(err) {
   if (!err || typeof err !== 'object') {
     return { status: 500, message: 'Erreur interne du serveur.', code: 'ERREUR' };
@@ -27,13 +51,15 @@ function normalizeSupabaseError(err) {
     };
   }
 
-  if (code === 'PGRST204' || code === '42703') {
-    const col = raw.match(/column ['"]?(\w+)['"]?/)?.[1] || details.match(/column ["']?(\w+)["']?/)?.[1];
+  if (isMissingColumnError(err)) {
+    const col = parseMissingColumn(err);
+    const cacheHint =
+      ' Si le script SQL est déjà exécuté : Supabase → Project Settings → API → « Reload schema » (cache PostgREST), puis redéployez l’API Render.';
     return {
       status: 500,
       message: col
-        ? `Colonne base manquante (${col}). Exécutez sql/amendments-livraisons-courier-flow.sql sur Supabase puis redéployez l'API.`
-        : "Schéma base incomplet. Exécutez sql/amendments-livraisons-courier-flow.sql sur Supabase.",
+        ? `Colonne « ${col} » absente du cache API.${cacheHint}`
+        : `Schéma base / cache API incomplet.${cacheHint}`,
       code: 'SCHEMA_INCOMPLET',
     };
   }
@@ -73,4 +99,4 @@ function normalizeSupabaseError(err) {
   };
 }
 
-module.exports = { normalizeSupabaseError };
+module.exports = { normalizeSupabaseError, parseMissingColumn, isMissingColumnError };
