@@ -163,6 +163,7 @@ async function getAdminStats(req, res, next) {
       activeBoutiques,
       pendingUsers,
       ordersRes,
+      livraisonsRes,
     ] = await Promise.all([
       db.from('restaurants').select('id', { count: 'exact', head: true }).eq('statut', 'en_attente'),
       db.from('boutiques').select('id', { count: 'exact', head: true }).eq('statut', 'en_attente'),
@@ -173,6 +174,7 @@ async function getAdminStats(req, res, next) {
         .select('id, role_id, est_approuve')
         .eq('est_approuve', false),
       db.from('commandes').select('id', { count: 'exact', head: true }),
+      db.from('livraisons').select('id, type_livraison, sous_commande_id, statut'),
     ]);
 
     if (pendingRestaurants.error) throw pendingRestaurants.error;
@@ -181,6 +183,16 @@ async function getAdminStats(req, res, next) {
     if (activeBoutiques.error) throw activeBoutiques.error;
     if (pendingUsers.error) throw pendingUsers.error;
     if (ordersRes.error) throw ordersRes.error;
+    if (livraisonsRes.error) throw livraisonsRes.error;
+
+    const livraisons = livraisonsRes.data || [];
+    const livraisonsTotal = livraisons.length;
+    const livraisonsExternes = livraisons.filter(
+      (l) => l.type_livraison === 'externe' || !l.sous_commande_id,
+    ).length;
+    const livraisonsEnCours = livraisons.filter(
+      (l) => !['livree', 'annulee'].includes(l.statut),
+    ).length;
 
     const roleIds = [...new Set((pendingUsers.data || []).map((u) => u.role_id))];
     let merchantPendingCount = pendingUsers.data?.length || 0;
@@ -197,6 +209,9 @@ async function getAdminStats(req, res, next) {
       commerces_actifs: (activeRestaurants.count || 0) + (activeBoutiques.count || 0),
       comptes_marchands_en_attente: merchantPendingCount,
       commandes_total: ordersRes.count || 0,
+      livraisons_total: livraisonsTotal,
+      livraisons_externes: livraisonsExternes,
+      livraisons_en_cours: livraisonsEnCours,
     });
   } catch (error) {
     return next(error);
@@ -950,13 +965,18 @@ async function listAdminDeliveries(req, res, next) {
     const db = getDb();
     let query = db.from('livraisons').select('*').order('created_at', { ascending: false });
     if (status) query = query.eq('statut', status);
-    if (typeFilter === 'externe') query = query.eq('type_livraison', 'externe');
-    if (typeFilter === 'commande') query = query.eq('type_livraison', 'commande');
     const { data: livraisons, error } = await query;
     if (error) throw error;
 
+    let rows = livraisons || [];
+    if (typeFilter === 'externe') {
+      rows = rows.filter((l) => l.type_livraison === 'externe' || !l.sous_commande_id);
+    } else if (typeFilter === 'commande') {
+      rows = rows.filter((l) => l.type_livraison !== 'externe' && l.sous_commande_id);
+    }
+
     const out = [];
-    for (const liv of livraisons || []) {
+    for (const liv of rows) {
       out.push(await mapAdminDeliveryRow(db, liv));
     }
 
