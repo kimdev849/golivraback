@@ -79,24 +79,41 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '512kb' }));
 
+const isDev = process.env.NODE_ENV !== 'production';
+
+// ── Rate Limiting ──────────────────────────────────────────────────────
+// Désactivé complètement en développement pour éviter le blocage.
+// En production : 1000 req / 15 min par IP (configurable via RATE_LIMIT_MAX).
 const generalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: Number(process.env.RATE_LIMIT_MAX) || 200,
+  max: isDev ? 0 : (Number(process.env.RATE_LIMIT_MAX) || 1000),
   standardHeaders: true,
   legacyHeaders: false,
-  skip: (req) => req.method === 'GET' && req.path === '/health',
+  skip: (req) => {
+    // Toujours laisser passer le health check
+    if (req.method === 'GET' && req.path === '/health') return true;
+    // En dev, tout passe (max=0 = illimité, mais on double la sécurité)
+    if (isDev) return true;
+    return false;
+  },
   message: { message: 'Trop de requêtes, réessayez plus tard.', code: 'RATE_LIMIT' },
 });
 
 const otpLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: Number(process.env.RATE_LIMIT_OTP_MAX) || 30,
+  max: isDev ? 0 : (Number(process.env.RATE_LIMIT_OTP_MAX) || 50),
   standardHeaders: true,
   legacyHeaders: false,
+  skip: () => isDev,
   message: { message: 'Trop de demandes OTP, réessayez plus tard.', code: 'RATE_LIMIT_OTP' },
 });
 
-app.use(generalLimiter);
+// N'appliquer le limiter global qu'en production
+if (!isDev) {
+  app.use(generalLimiter);
+} else {
+  console.log('[golivra] Mode développement : rate limiting désactivé.');
+}
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true, service: 'golivra-backend' });
