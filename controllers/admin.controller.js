@@ -814,6 +814,41 @@ async function activateLogisticsCourier(req, res, next) {
   }
 }
 
+async function updateLogisticsCommission(req, res, next) {
+  try {
+    const { companyId } = req.params;
+    const pct = Number(req.body?.commission_pct ?? req.body?.commissionPct);
+    if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
+      throw createHttpError(400, 'commission_pct doit être entre 0 et 100.');
+    }
+
+    const db = getDb();
+    const { data, error } = await db
+      .from('entreprises_logistiques')
+      .update({ commission_pct: pct, updated_at: new Date().toISOString() })
+      .eq('id', companyId)
+      .select('*')
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) throw createHttpError(404, 'Entreprise logistique introuvable.');
+
+    const { data: gestionnaire } = await db
+      .from('utilisateurs')
+      .select('id, nom, telephone, email')
+      .eq('id', data.gestionnaire_id)
+      .maybeSingle();
+
+    const { count } = await db
+      .from('livreurs')
+      .select('id', { count: 'exact', head: true })
+      .eq('entreprise_logistique_id', companyId);
+
+    return res.json(mapLogisticsAdmin(data, gestionnaire, count || 0));
+  } catch (error) {
+    return next(error);
+  }
+}
+
 async function updateLogisticsStatus(req, res, next) {
   try {
     const { companyId } = req.params;
@@ -1219,6 +1254,7 @@ module.exports = {
   getLogisticsCompanyAdmin,
   createLogisticsCompany,
   updateLogisticsStatus,
+  updateLogisticsCommission,
   listAdminDeliveries,
   getAdminDeliveryDetail,
   getAdminCommissions,

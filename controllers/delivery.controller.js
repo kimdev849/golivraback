@@ -1,11 +1,5 @@
 const { getDb } = require('../config/db');
 const { createHttpError, requireFields } = require('../utils/http');
-const {
-  formatDateTimeFr,
-  mapLivraisonTimeline,
-  mapTimestampFields,
-  LIVRAISON_TIMESTAMP_FIELDS,
-} = require('../utils/timeline');
 
 async function getLivreurIdForUser(db, userId) {
   const { data: liv, error } = await db.from('livreurs').select('id').eq('utilisateur_id', userId).maybeSingle();
@@ -63,10 +57,7 @@ async function mapCourierMissionRow(db, liv) {
       type_livraison: 'externe',
       created_at: liv.created_at,
       attribuee_at: liv.attribuee_at,
-      collectee_at: liv.collectee_at,
       livree_at: liv.livree_at,
-      timeline: mapLivraisonTimeline(liv),
-      ...mapTimestampFields(liv, LIVRAISON_TIMESTAMP_FIELDS),
       adresse_livraison: deliveryAddressFromSnapshot(liv.adresse_livraison_snapshot),
       adresse_retrait: adresseRetrait,
       client_nom: liv.client_nom || null,
@@ -117,10 +108,7 @@ async function mapCourierMissionRow(db, liv) {
     sous_commande_id: liv.sous_commande_id,
     created_at: liv.created_at,
     attribuee_at: liv.attribuee_at,
-    collectee_at: liv.collectee_at,
     livree_at: liv.livree_at,
-    timeline: mapLivraisonTimeline(liv),
-    ...mapTimestampFields(liv, LIVRAISON_TIMESTAMP_FIELDS),
     adresse_livraison: deliveryAddressFromSnapshot(liv.adresse_livraison_snapshot),
     adresse_retrait: adresseRetrait,
     commerce_nom: commerceNom,
@@ -162,20 +150,12 @@ async function getDeliveryStatus(req, res, next) {
 
     const delivery = deliveries && deliveries[0] ? deliveries[0] : null;
 
-    const deliveriesList = deliveries || [];
     return res.json({
       orderId: order.id,
       orderStatus: order.statut,
       delivery,
-      deliveries: deliveriesList,
+      deliveries: deliveries || [],
       createdAt: order.created_at,
-      createdAtLabel: formatDateTimeFr(order.created_at),
-      deliveryTimelines: deliveriesList.map((liv) => ({
-        id: liv.id,
-        statut: liv.statut,
-        timeline: mapLivraisonTimeline(liv),
-        ...mapTimestampFields(liv, LIVRAISON_TIMESTAMP_FIELDS),
-      })),
     });
   } catch (error) {
     return next(error);
@@ -432,9 +412,7 @@ function mapCourierMissionRowMinimal(liv) {
     sous_commande_id: liv.sous_commande_id || null,
     created_at: liv.created_at,
     attribuee_at: liv.attribuee_at || liv.assigne_le || null,
-    collectee_at: liv.collectee_at || null,
     livree_at: liv.livree_at || liv.livre_le || null,
-    timeline: mapLivraisonTimeline(liv),
     adresse_livraison: addr,
     adresse_retrait: '',
     commande: null,

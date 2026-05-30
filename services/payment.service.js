@@ -53,9 +53,9 @@ async function payOrderForClient(db, commandeId, clientId, { provider } = {}) {
 
   if (!paiement) throw createHttpError(404, 'Paiement introuvable pour cette commande.');
   if (paiement.statut === 'valide') {
-    const { creditVendorsOnOrderPaid } = require('./wallet.service');
-    await creditVendorsOnOrderPaid(db, commandeId, paiement.id).catch((err) => {
-      console.error('[wallet] creditVendorsOnOrderPaid (retry)', commandeId, err?.message || err);
+    const { holdOrderPaymentInEscrow } = require('./wallet.service');
+    await holdOrderPaymentInEscrow(db, commandeId, paiement.id).catch((err) => {
+      console.error('[wallet] holdOrderPaymentInEscrow (retry)', commandeId, err?.message || err);
     });
     return { commande, paiement, deja_valide: true };
   }
@@ -107,9 +107,9 @@ async function payOrderForClient(db, commandeId, clientId, { provider } = {}) {
     throw createHttpError(409, 'Le paiement ne peut plus être validé.');
   }
 
-  const { creditVendorsOnOrderPaid } = require('./wallet.service');
-  await creditVendorsOnOrderPaid(db, commandeId, updatedPayment.id).catch((err) => {
-    console.error('[wallet] creditVendorsOnOrderPaid', commandeId, err?.message || err);
+  const { holdOrderPaymentInEscrow } = require('./wallet.service');
+  await holdOrderPaymentInEscrow(db, commandeId, updatedPayment.id).catch((err) => {
+    console.error('[wallet] holdOrderPaymentInEscrow', commandeId, err?.message || err);
   });
 
   return { commande, paiement: updatedPayment, deja_valide: false };

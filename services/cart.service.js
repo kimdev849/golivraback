@@ -7,6 +7,7 @@ async function resolveProduct(db, productId) {
     .eq('id', productId)
     .maybeSingle();
   if (plat) {
+    const stockUnlimited = plat.stock === null || plat.stock === undefined;
     return {
       kind: 'plat',
       plat_id: plat.id,
@@ -15,7 +16,8 @@ async function resolveProduct(db, productId) {
       boutique_id: null,
       nom: plat.nom,
       prix: Number(plat.prix),
-      stock: Number(plat.stock ?? 0),
+      stock: stockUnlimited ? null : Number(plat.stock),
+      stock_illimite: stockUnlimited,
       disponible: plat.est_disponible !== false,
     };
   }
@@ -26,6 +28,7 @@ async function resolveProduct(db, productId) {
     .eq('id', productId)
     .maybeSingle();
   if (article) {
+    const stockUnlimited = article.stock === null || article.stock === undefined;
     return {
       kind: 'article',
       plat_id: null,
@@ -34,7 +37,8 @@ async function resolveProduct(db, productId) {
       boutique_id: article.boutique_id,
       nom: article.nom,
       prix: Number(article.prix),
-      stock: Number(article.stock ?? 0),
+      stock: stockUnlimited ? null : Number(article.stock),
+      stock_illimite: stockUnlimited,
       disponible: article.est_disponible !== false,
     };
   }

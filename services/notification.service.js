@@ -1,4 +1,11 @@
-/** Notifications in-app (table `notifications`). */
+/**
+ * Notifications in-app (table `notifications`) + push vers l'appareil.
+ *
+ * Chaque `notifyUserSafe` insère une ligne en DB ET envoie un push
+ * via l'API Expo (fire-and-forget, sans bloquer la réponse API).
+ */
+
+const { sendPushToUser, sendPushToUsers } = require('./push.service');
 
 async function insertNotification(db, { utilisateurId, type, titre, corps, data }) {
   const { error } = await db.from('notifications').insert({
@@ -12,7 +19,8 @@ async function insertNotification(db, { utilisateurId, type, titre, corps, data 
 }
 
 /**
- * Prévient tous les livreurs disponibles (sans mission active) qu’une course est ouverte.
+ * Prévient tous les livreurs disponibles (sans mission active) qu'une course est ouverte.
+ * Insère en DB et envoie un push à chacun.
  */
 async function notifyAvailableCouriersForDelivery(db, livraisonId) {
   const { listAvailableCouriers } = require('./dispatch.service');
@@ -26,12 +34,20 @@ async function notifyAvailableCouriersForDelivery(db, livraisonId) {
     utilisateur_id: utilisateurId,
     type: 'livraison_statut',
     titre: 'Nouvelle course disponible',
-    corps: 'Une livraison vous attend. Ouvrez l’app livreur pour l’accepter.',
+    corps: 'Une livraison vous attend. Ouvrez l\'app livreur pour l\'accepter.',
     data: { livraison_id: livraisonId, action: 'open_delivery' },
   }));
 
   const { error } = await db.from('notifications').insert(rows);
   if (error) throw error;
+
+  // Push fire-and-forget
+  void sendPushToUsers(db, userIds, {
+    title: 'Nouvelle course disponible 🚗',
+    body: 'Une livraison vous attend. Ouvrez l\'app livreur pour l\'accepter.',
+    data: { livraison_id: livraisonId, action: 'open_delivery' },
+  });
+
   return { notified: rows.length };
 }
 
@@ -98,12 +114,26 @@ async function markAllNotificationsRead(db, userId) {
   if (error) throw error;
 }
 
+/**
+ * Insère une notification en DB ET envoie un push à l'appareil.
+ * Ne lève jamais d'erreur (safe).
+ *
+ * @param {import('@supabase/supabase-js').SupabaseClient} db
+ * @param {{ utilisateurId: string, type: string, titre: string, corps?: string, data?: object }} payload
+ */
 async function notifyUserSafe(db, payload) {
   try {
     await insertNotification(db, payload);
   } catch (err) {
     console.warn('[notifications] insert failed:', err?.message || err);
   }
+
+  // Push fire-and-forget — ne bloque pas, n'affecte pas la transaction principale
+  void sendPushToUser(db, payload.utilisateurId, {
+    title: payload.titre,
+    body: payload.corps || '',
+    data: payload.data || {},
+  });
 }
 
 module.exports = {

@@ -135,30 +135,203 @@ async function getEstablishmentOwnerId(db, sc) {
   return null;
 }
 
+async function markCommandeEscrowCredited(db, commandeId) {
+  const now = new Date().toISOString();
+  const { error } = await db
+    .from('commandes')
+    .update({ escrow_credite_at: now, updated_at: now })
+    .eq('id', commandeId);
+  if (error && !String(error.message || '').includes('escrow_credite_at')) {
+    throw error;
+  }
+}
+
 /**
- * Paiement validé → 100 % des ventes au commerce (aucune commission GoLivra sur produits).
- * GoLivra est rémunéré uniquement sur les frais de livraison (à la clôture mission).
+ * Paiement validé → fonds sur le portefeuille escrow GoLivra (pas de versement marchand avant livraison).
  */
-async function creditVendorsOnOrderPaid(db, commandeId, paiementId) {
-  const { data: scs, error } = await db.from('sous_commandes').select('*').eq('commande_id', commandeId);
+async function holdOrderPaymentInEscrow(db, commandeId, paiementId) {
+  const { data: commande, error } = await db
+    .from('commandes')
+    .select('id, total, escrow_credite_at')
+    .eq('id', commandeId)
+    .maybeSingle();
   if (error) throw error;
+  if (!commande) throw createHttpError(404, 'Commande introuvable.');
 
-  const credited = [];
-  for (const sc of scs || []) {
-    const ownerId = await getEstablishmentOwnerId(db, sc);
-    const sousTotal = Number(sc.sous_total ?? 0);
-    if (!ownerId || sousTotal <= 0) continue;
+  if (commande.escrow_credite_at) {
+    return { commande_id: commandeId, paiement_id: paiementId, deja_credite: true };
+  }
 
-    await creditWallet(db, ownerId, sousTotal, {
+  const total = Number(commande.total ?? 0);
+  if (total <= 0) {
+    await markCommandeEscrowCredited(db, commandeId);
+    return { commande_id: commandeId, paiement_id: paiementId, montant_fcfa: 0 };
+  }
+
+  const golivraUserId = await resolveGolivraPlatformUserId(db);
+  await creditWallet(db, golivraUserId, total, {
+    type: 'credit',
+    referenceType: 'escrow_commande',
+    referenceId: commandeId,
+    description: `Escrow — paiement commande ${commandeId}`,
+  });
+  await markCommandeEscrowCredited(db, commandeId);
+
+  return { commande_id: commandeId, paiement_id: paiementId, montant_fcfa: total, escrow: true };
+}
+
+/** @deprecated — conservé pour compatibilité d’import ; utilise l’escrow. */
+async function creditVendorsOnOrderPaid(db, commandeId, paiementId) {
+  return holdOrderPaymentInEscrow(db, commandeId, paiementId);
+}
+
+async function resolveDeliveryCommissionPercent(db, entrepriseLogistiqueId) {
+  if (entrepriseLogistiqueId) {
+    const { data } = await db
+      .from('entreprises_logistiques')
+      .select('commission_pct')
+      .eq('id', entrepriseLogistiqueId)
+      .maybeSingle();
+    const pct = Number(data?.commission_pct);
+    if (Number.isFinite(pct) && pct >= 0 && pct <= 100) return pct;
+  }
+  const config = await getPricingConfig(db);
+  return Number(config.delivery_platform_percent);
+}
+
+async function resolveDriverUserId(db, livraison) {
+  if (!livraison?.livreur_id) return null;
+  const { data } = await db
+    .from('livreurs')
+    .select('utilisateur_id')
+    .eq('id', livraison.livreur_id)
+    .maybeSingle();
+  return data?.utilisateur_id || null;
+}
+
+async function markSousCommandeReglee(db, sousCommandeId) {
+  const now = new Date().toISOString();
+  const { error } = await db
+    .from('sous_commandes')
+    .update({ reglee_at: now, updated_at: now })
+    .eq('id', sousCommandeId);
+  if (error && !String(error.message || '').includes('reglee_at')) {
+    throw error;
+  }
+}
+
+/**
+ * Livraison terminée (ou sous-commande « livrée ») → répartition unique :
+ * commerce = produit ; livreur = livraison − commission GoLivra ; GoLivra = % livraison (contrat entreprise).
+ */
+async function settleSousCommandePayout(db, sousCommandeId, livraison = null) {
+  const { data: sc, error: scErr } = await db
+    .from('sous_commandes')
+    .select('*')
+    .eq('id', sousCommandeId)
+    .maybeSingle();
+  if (scErr) throw scErr;
+  if (!sc) return { skipped: true, reason: 'sous_commande_absente' };
+
+  if (sc.reglee_at) {
+    return { skipped: true, reason: 'deja_reglee', sous_commande_id: sousCommandeId };
+  }
+
+  const golivraUserId = await resolveGolivraPlatformUserId(db);
+  const golivraPf = await getOrCreatePortefeuille(db, golivraUserId);
+  const existsSettlement = await hasWalletTransaction(db, {
+    portefeuilleId: golivraPf.id,
+    type: 'debit',
+    referenceType: 'escrow_sous_commande',
+    referenceId: sousCommandeId,
+  });
+  if (existsSettlement) {
+    return { skipped: true, reason: 'deja_reglee', sous_commande_id: sousCommandeId };
+  }
+  const merchantRef = `${sousCommandeId}:merchant`;
+  const ownerId = await getEstablishmentOwnerId(db, sc);
+  const produit = Number(sc.sous_total ?? 0);
+  const frais = Number(sc.frais_livraison ?? 0);
+  const entrepriseId = livraison?.entreprise_logistique_id || null;
+  const commissionPct = await resolveDeliveryCommissionPercent(db, entrepriseId);
+  const commissionGolivra = frais > 0 ? Math.round((frais * commissionPct) / 100) : 0;
+  const livreurPart = Math.max(0, frais - commissionGolivra);
+
+  const { data: commande } = await db
+    .from('commandes')
+    .select('escrow_credite_at')
+    .eq('id', sc.commande_id)
+    .maybeSingle();
+  const escrowHeld = Boolean(commande?.escrow_credite_at);
+
+  const escrowDebit = escrowHeld ? produit + livreurPart : 0;
+  if (escrowHeld && escrowDebit > 0 && !existsSettlement) {
+    await debitWallet(db, golivraUserId, escrowDebit, {
+      type: 'debit',
+      referenceType: 'escrow_sous_commande',
+      referenceId: sousCommandeId,
+      description: `Sortie escrow — sous-commande ${sc.numero || sousCommandeId}`,
+    });
+  }
+
+  if (ownerId && produit > 0) {
+    const alreadyMerchant = await hasWalletTransaction(db, {
+      portefeuilleId: (await getOrCreatePortefeuille(db, ownerId)).id,
       type: 'credit',
       referenceType: 'sous_commande',
       referenceId: sc.id,
-      description: `Vente commande — ${sc.numero || sc.id}`,
     });
-    credited.push({ sous_commande_id: sc.id, utilisateur_id: ownerId, montant_fcfa: sousTotal });
+    const alreadyMerchantV2 = await hasWalletTransaction(db, {
+      portefeuilleId: (await getOrCreatePortefeuille(db, ownerId)).id,
+      type: 'credit',
+      referenceType: 'vente_sous_commande',
+      referenceId: merchantRef,
+    });
+    if (!alreadyMerchant && !alreadyMerchantV2) {
+      await creditWallet(db, ownerId, produit, {
+        type: 'credit',
+        referenceType: 'vente_sous_commande',
+        referenceId: merchantRef,
+        description: `Vente livrée — ${sc.numero || sousCommandeId}`,
+      });
+    }
   }
 
-  return { credited, paiement_id: paiementId, golivra_commission_ventes: 0 };
+  const driverUserId = await resolveDriverUserId(db, livraison);
+  if (livreurPart > 0) {
+    const driverRef = `${sousCommandeId}:driver`;
+    if (driverUserId) {
+      await creditWallet(db, driverUserId, livreurPart, {
+        type: 'gain_livraison',
+        referenceType: 'livraison_sous_commande',
+        referenceId: driverRef,
+        description: `Livraison — ${livreurPart} FCFA (commission plateforme ${commissionPct} %)`,
+      });
+    } else if (entrepriseId) {
+      const gestionnaireId = await resolveLogisticsGestionnaireId(db, entrepriseId);
+      if (gestionnaireId) {
+        await creditWallet(db, gestionnaireId, livreurPart, {
+          type: 'commission_logistique',
+          referenceType: 'sous_commande',
+          referenceId: driverRef,
+          description: `Livraison entreprise — ${livreurPart} FCFA`,
+        });
+      }
+    }
+  }
+
+  // La commission reste sur le portefeuille GoLivra (escrow entrant − sorties marchand/livreur).
+
+  await markSousCommandeReglee(db, sousCommandeId);
+
+  return {
+    sous_commande_id: sousCommandeId,
+    produit_fcfa: produit,
+    livreur_fcfa: livreurPart,
+    golivra_fcfa: commissionGolivra,
+    commission_pct: commissionPct,
+    escrow: escrowHeld,
+  };
 }
 
 async function debitWallet(
@@ -173,9 +346,19 @@ async function debitWallet(
   }
 
   const portefeuille = await getOrCreatePortefeuille(db, utilisateurId);
+  if (referenceType && referenceId) {
+    const exists = await hasWalletTransaction(db, {
+      portefeuilleId: portefeuille.id,
+      type,
+      referenceType,
+      referenceId,
+    });
+    if (exists) return portefeuille;
+  }
+
   const soldeAvant = Number(portefeuille.solde ?? 0);
   if (soldeAvant < amount) {
-    throw createHttpError(400, 'Solde insuffisant pour ce retrait.');
+    throw createHttpError(400, 'Solde insuffisant.');
   }
 
   const soldeApres = soldeAvant - amount;
@@ -246,16 +429,32 @@ async function getWalletDashboard(db, utilisateurId) {
   };
 }
 
-const MIN_RETRAIT_FCFA = Number(process.env.MIN_RETRAIT_FCFA) || 1000;
+const MIN_RETRAIT_FCFA = Number(process.env.MIN_RETRAIT_FCFA) || 5000;
 
-async function createWithdrawalRequest(db, utilisateurId, payload) {
+const AUTO_WITHDRAW_ROLES = new Set([
+  'restaurateur',
+  'commercant',
+  'gestionnaire_logistique',
+  'livreur',
+]);
+
+async function createWithdrawalRequest(db, utilisateurId, payload, { role } = {}) {
   const montant = Number(payload.montant);
   const methode = String(payload.methode || 'airtel_money').trim();
   const numeroCompte = String(payload.numero_compte || payload.numeroCompte || '').trim();
   const note = payload.note ? String(payload.note).trim() : null;
+  const roleName = role ? String(role).trim() : null;
+  const isPlatformAdmin = roleName === 'admin';
+  const autoApprove = roleName ? AUTO_WITHDRAW_ROLES.has(roleName) : false;
+  const minMontant = isPlatformAdmin ? 1 : MIN_RETRAIT_FCFA;
 
-  if (!Number.isFinite(montant) || montant < MIN_RETRAIT_FCFA) {
-    throw createHttpError(400, `Montant minimum de retrait : ${MIN_RETRAIT_FCFA} FCFA.`);
+  if (!Number.isFinite(montant) || montant < minMontant) {
+    throw createHttpError(
+      400,
+      isPlatformAdmin
+        ? 'Montant de retrait invalide.'
+        : `Montant minimum de retrait : ${MIN_RETRAIT_FCFA} FCFA.`,
+    );
   }
   if (!numeroCompte || numeroCompte.length < 8) {
     throw createHttpError(400, 'Numéro Mobile Money invalide.');
@@ -266,15 +465,18 @@ async function createWithdrawalRequest(db, utilisateurId, payload) {
     throw createHttpError(400, 'Solde insuffisant.');
   }
 
-  const { data: pending } = await db
-    .from('demandes_retrait')
-    .select('id')
-    .eq('utilisateur_id', utilisateurId)
-    .eq('statut', 'en_attente');
-  if ((pending || []).length > 0) {
-    throw createHttpError(409, 'Vous avez déjà une demande de retrait en attente.');
+  if (!autoApprove && !isPlatformAdmin) {
+    const { data: pending } = await db
+      .from('demandes_retrait')
+      .select('id')
+      .eq('utilisateur_id', utilisateurId)
+      .eq('statut', 'en_attente');
+    if ((pending || []).length > 0) {
+      throw createHttpError(409, 'Vous avez déjà une demande de retrait en attente.');
+    }
   }
 
+  const now = new Date().toISOString();
   const { data: created, error } = await db
     .from('demandes_retrait')
     .insert({
@@ -284,11 +486,23 @@ async function createWithdrawalRequest(db, utilisateurId, payload) {
       methode,
       numero_compte: numeroCompte,
       note_demandeur: note,
-      statut: 'en_attente',
+      statut: autoApprove || isPlatformAdmin ? 'paye' : 'en_attente',
+      traite_at: autoApprove || isPlatformAdmin ? now : null,
+      note_admin: autoApprove || isPlatformAdmin ? 'Retrait traité automatiquement' : null,
     })
     .select('*')
     .single();
   if (error) throw error;
+
+  if (autoApprove || isPlatformAdmin) {
+    await debitWallet(db, utilisateurId, montant, {
+      type: 'debit',
+      referenceType: 'retrait',
+      referenceId: created.id,
+      description: `Retrait ${methode} → ${numeroCompte}`,
+    });
+  }
+
   return created;
 }
 
@@ -438,66 +652,12 @@ async function resolveDeliveryFeeForLivraison(db, livraison) {
   return Number(livraison.commission_logistique ?? 0) + Number(livraison.montant_livreur ?? 0);
 }
 
-/**
- * Livraison terminée → split % sur les frais de livraison uniquement.
- */
+/** @deprecated — délègue au règlement post-livraison unifié. */
 async function settleDeliveryFeesOnComplete(db, livraison) {
-  const config = await getPricingConfig(db);
-  const livraisonId = livraison.id;
-  const frais = await resolveDeliveryFeeForLivraison(db, livraison);
-  const { logistics, platform } = splitDeliveryFee(frais, config);
-
-  const golivraUserId = await resolveGolivraPlatformUserId(db);
-
-  if (platform > 0) {
-    await creditWallet(db, golivraUserId, platform, {
-      type: 'commission_golivra',
-      referenceType: 'livraison',
-      referenceId: `${livraisonId}:delivery_platform`,
-      description: `Livraison — plateforme ${config.delivery_platform_percent} % (${platform} FCFA)`,
-    });
+  if (!livraison?.sous_commande_id) {
+    return { skipped: true, reason: 'sans_sous_commande' };
   }
-
-  const companyId = livraison.entreprise_logistique_id;
-  const gestionnaireId = await resolveLogisticsGestionnaireId(db, companyId);
-
-  if (gestionnaireId && logistics > 0) {
-    await creditWallet(db, gestionnaireId, logistics, {
-      type: 'commission_logistique',
-      referenceType: 'livraison',
-      referenceId: livraisonId,
-      description: `Livraison — entreprise ${config.delivery_logistics_percent} % (${logistics} FCFA)`,
-    });
-    return {
-      frais_livraison_fcfa: frais,
-      golivra_fcfa: platform,
-      logistique_fcfa: logistics,
-      logistique_gestionnaire_id: gestionnaireId,
-      percents: {
-        delivery_platform_percent: config.delivery_platform_percent,
-        delivery_logistics_percent: config.delivery_logistics_percent,
-      },
-    };
-  }
-
-  if (logistics > 0) {
-    await creditWallet(db, golivraUserId, logistics, {
-      type: 'commission_logistique',
-      referenceType: 'livraison',
-      referenceId: `${livraisonId}:logistique_fallback`,
-      description: `Livraison — sans entreprise (${logistics} FCFA)`,
-    });
-  }
-
-  return {
-    frais_livraison_fcfa: frais,
-    golivra_fcfa: platform + (gestionnaireId ? 0 : logistics),
-    logistique_fcfa: gestionnaireId ? logistics : 0,
-    percents: {
-      delivery_platform_percent: config.delivery_platform_percent,
-      delivery_logistics_percent: config.delivery_logistics_percent,
-    },
-  };
+  return settleSousCommandePayout(db, livraison.sous_commande_id, livraison);
 }
 
 async function getPortefeuilleSolde(db, utilisateurId) {
@@ -510,8 +670,11 @@ module.exports = {
   getOrCreatePortefeuille,
   creditWallet,
   debitWallet,
+  holdOrderPaymentInEscrow,
   creditVendorsOnOrderPaid,
+  settleSousCommandePayout,
   settleDeliveryFeesOnComplete,
+  resolveDeliveryCommissionPercent,
   getPortefeuilleSolde,
   getWalletDashboard,
   listTransactionsForUser,

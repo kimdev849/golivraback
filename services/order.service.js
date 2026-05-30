@@ -109,6 +109,9 @@ async function buildLinesForSegment(db, kind, entrepriseId, articles) {
         throw createHttpError(400, 'Plat invalide pour ce restaurant');
       }
       if (!plat.est_disponible) throw createHttpError(400, `Plat indisponible : ${plat.nom}`);
+      if (plat.stock !== null && plat.stock !== undefined && q > Number(plat.stock)) {
+        throw createHttpError(400, 'Stock insuffisant');
+      }
       const pu = Number(plat.prix_promo ?? plat.prix);
       const lineTot = q * pu;
       sousTotal += lineTot;
@@ -122,6 +125,12 @@ async function buildLinesForSegment(db, kind, entrepriseId, articles) {
         prix_unitaire: pu,
         sous_total: lineTot,
       });
+      if (plat.stock !== null && plat.stock !== undefined) {
+        await db
+          .from('plats')
+          .update({ stock: Math.max(0, Number(plat.stock) - q) })
+          .eq('id', plat.id);
+      }
     } else {
       const { data: art, error: aErr } = await db.from('articles').select('*').eq('id', itemId).maybeSingle();
       if (aErr) throw aErr;
@@ -325,7 +334,7 @@ async function createOrderFromPayload(db, clientId, payload) {
     });
   }
 
-  await db.from('paiements').insert({
+  const { error: payInsertErr } = await db.from('paiements').insert({
     commande_id: commande.id,
     utilisateur_id: clientId,
     montant: orderTotal,
@@ -341,6 +350,7 @@ async function createOrderFromPayload(db, clientId, payload) {
       },
     },
   });
+  if (payInsertErr) throw payInsertErr;
 
   return { commande, sousCommandes };
 }

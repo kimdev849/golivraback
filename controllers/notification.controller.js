@@ -6,6 +6,10 @@ const {
   markNotificationRead,
   markAllNotificationsRead,
 } = require('../services/notification.service');
+const {
+  registerToken,
+  unregisterToken,
+} = require('../services/push.service');
 
 async function listMine(req, res, next) {
   try {
@@ -52,9 +56,58 @@ async function markAllRead(req, res, next) {
   }
 }
 
+/**
+ * POST /api/notifications/register-token
+ * Body : { expoPushToken: string, platform: 'ios' | 'android' | 'web' }
+ */
+async function handleRegisterToken(req, res, next) {
+  try {
+    const { expoPushToken, platform } = req.body;
+
+    if (!expoPushToken || typeof expoPushToken !== 'string') {
+      throw createHttpError(400, 'expoPushToken manquant ou invalide.');
+    }
+
+    const validPlatforms = ['ios', 'android', 'web'];
+    const normalizedPlatform = typeof platform === 'string' && validPlatforms.includes(platform)
+      ? platform
+      : 'android';
+
+    const db = getDb();
+    await registerToken(db, req.auth.userId, expoPushToken.trim(), normalizedPlatform);
+
+    return res.json({ ok: true, token: expoPushToken.trim(), platform: normalizedPlatform });
+  } catch (error) {
+    return next(error);
+  }
+}
+
+/**
+ * DELETE /api/notifications/unregister-token
+ * Body : { expoPushToken: string }
+ */
+async function handleUnregisterToken(req, res, next) {
+  try {
+    const { expoPushToken } = req.body;
+
+    if (!expoPushToken || typeof expoPushToken !== 'string') {
+      throw createHttpError(400, 'expoPushToken manquant.');
+    }
+
+    const db = getDb();
+    await unregisterToken(db, req.auth.userId, expoPushToken.trim());
+
+    return res.json({ ok: true });
+  } catch (error) {
+    return next(error);
+  }
+}
+
 module.exports = {
   listMine,
   unreadCount,
   markRead,
   markAllRead,
+  handleRegisterToken,
+  handleUnregisterToken,
 };

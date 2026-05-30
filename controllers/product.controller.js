@@ -18,7 +18,9 @@ function canManageEstablishment(req, row) {
 }
 
 function mapPlatToProduct(p, enterpriseId) {
-  const stock = p.est_disponible ? (p.stock ?? 999) : 0;
+  let stock = null;
+  if (p.stock !== null && p.stock !== undefined) stock = Math.max(0, Number(p.stock));
+  if (p.est_disponible === false) stock = 0;
   return {
     id: p.id,
     entreprise_id: enterpriseId,
@@ -28,7 +30,8 @@ function mapPlatToProduct(p, enterpriseId) {
     prix_promo: p.prix_promo != null ? Number(p.prix_promo) : null,
     promo_debut_at: p.promo_debut_at ?? null,
     promo_fin_at: p.promo_fin_at ?? null,
-    stock: typeof p.stock === 'number' ? p.stock : stock,
+    stock,
+    stock_illimite: p.stock === null || p.stock === undefined,
     est_disponible: p.est_disponible !== false,
     est_en_vedette: p.est_en_vedette === true,
     image_url: p.image_url ?? null,
@@ -372,6 +375,11 @@ async function createProduct(req, res, next) {
         promoFinAt,
         estDisponible,
       });
+      if (stockIllimite === true) {
+        insertPlat.stock = null;
+      } else if (stock !== undefined && stock !== null && stock !== '') {
+        insertPlat.stock = Math.max(0, Math.floor(Number(stock)));
+      }
 
       const { data, error } = await db.from('plats').insert(insertPlat).select('*').single();
       if (error) throw error;
@@ -484,6 +492,11 @@ async function updateProduct(req, res, next) {
         promoFinAt,
         estDisponible,
       });
+      if (stockIllimite === true) {
+        patch.stock = null;
+      } else if (stock !== undefined) {
+        patch.stock = stock === null || stock === '' ? null : Math.max(0, Math.floor(Number(stock)));
+      }
 
       const { data, error } = await db.from('plats').update(patch).eq('id', productId).select('*').single();
       if (error) throw error;

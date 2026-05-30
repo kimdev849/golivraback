@@ -23,7 +23,7 @@ async function requestWithdrawal(req, res, next) {
   try {
     requireFields(req.body, ['montant', 'numero_compte']);
     const db = getDb();
-    const row = await createWithdrawalRequest(db, req.auth.userId, req.body);
+    const row = await createWithdrawalRequest(db, req.auth.userId, req.body, { role: req.auth.role });
     return res.status(201).json(row);
   } catch (error) {
     return next(error);
@@ -34,7 +34,9 @@ async function getWithdrawalInfo(req, res) {
   return res.json({
     montant_minimum_fcfa: MIN_RETRAIT_FCFA,
     methodes: ['airtel_money', 'mtn_money'],
-    delai_traitement: '1 à 3 jours ouvrés (validation admin)',
+    delai_traitement: 'Immédiat pour commerces et entreprises logistiques',
+    validation_admin_requise: false,
+    note: 'GoLivra (admin) : retrait sans plafond minimum.',
   });
 }
 

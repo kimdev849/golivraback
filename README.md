@@ -2,6 +2,14 @@
 
 API Node.js (Express) pour l’application **GoLivra** : authentification (OTP SMS Twilio + sessions), commandes, entreprises, produits, livraisons, administration.
 
+## Écosystème GoLivra
+
+| Composant | Dépôt | Description |
+|-----------|-------|-------------|
+| **Backend API** (ce dépôt) | [KimJaver/GolivraBack](https://github.com/KimJaver/GolivraBack) | API Node.js / Express — logique métier, auth, OTP, commandes, livraisons |
+| **Site Admin** | [KimJaver/GolivraSiteAdmin](https://github.com/KimJaver/GolivraSiteAdmin) | Back-office web — TanStack Start, Vite, Tailwind, Radix |
+| **Site Vitrine** | [KimJaver/golivra](https://github.com/KimJaver/golivra) | Site statique / vitrine publique de GoLivra |
+
 ## Workflow Git
 
 Après chaque modification du code : enregistrer les changements puis pousser sur GitHub (`git add -A`, `git commit -m "…"`, `git push origin main`).
@@ -36,8 +44,8 @@ Santé de l’API : `GET http://localhost:3000/health`
 | `TWILIO_AUTH_TOKEN` | Token Twilio |
 | `TWILIO_FROM_NUMBER` | Numéro expéditeur SMS |
 | `CORS_ORIGINS` | Origines web autorisées (virgules). En **production**, si vide : les navigateurs (requête avec `Origin`) sont **refusés** par CORS ; sans `Origin` (souvent l’app native) reste autorisé. |
-| `RATE_LIMIT_MAX` | (Optionnel) Requêtes max / IP / 15 min, hors `GET /health`. Défaut : `200`. |
-| `RATE_LIMIT_OTP_MAX` | (Optionnel) Requêtes max sur `/api/otp/*` / IP / 15 min. Défaut : `30`. |
+| `RATE_LIMIT_MAX` | (Optionnel, **production uniquement**) Requêtes max / IP / 15 min. Défaut : `1000`. |
+| `RATE_LIMIT_OTP_MAX` | (Optionnel, **production uniquement**) Requêtes max sur `/api/otp/*` / IP / 15 min. Défaut : `20`. |
 | `OTP_TEST_MODE` | `1` = code OTP renvoyé dans la réponse JSON (pas de SMS). **Recommandé sans Twilio.** Mettre `0` quand Twilio est configuré. |
 | `OTP_TABLE` | (Optionnel) Forcer `otp` ou `otp_codes`. Par défaut : détection automatique. |
 | `SUPABASE_STORAGE_BUCKET` | Bucket Storage pour les images (`public` par défaut). Créer le bucket via `sql/fix-otp-and-storage.sql`. |
@@ -115,18 +123,22 @@ L’app mobile doit pointer vers l’URL publique de l’API, par exemple :
 
 Dépôt cible : [https://github.com/KimJaver/GolivraBack](https://github.com/KimJaver/GolivraBack)
 
+**Identité Git :**
+
 ```bash
-git init
 git config user.email "kimjaver7@gmail.com"
-git config user.name "KimJaver"
-git add .
-git commit -m "Initial commit: Golivra API"
-git branch -M main
-git remote add origin https://github.com/KimJaver/GolivraBack.git
-git push -u origin main
+git config user.name "GoLivra Dev"
 ```
 
-Si le dépôt distant n’est pas vide, utilisez `git pull origin main --allow-unrelated-histories` avant le premier `push`, ou forcez uniquement si vous assumez d’écraser l’historique distant.
+**Règle obligatoire :** Après chaque modification, commit + push automatique dans le dépôt du composant modifié :
+
+```bash
+git add <fichiers modifiés>
+git commit -m "<type>: <description>"
+git push origin main
+```
+
+**Préfixes de commit :** `feat:`, `fix:`, `security:`, `ui:`, `refactor:`, `docs:`, `chore:`
 
 **Ne commitez jamais** le fichier `.env` (déjà ignoré par `.gitignore`).
 

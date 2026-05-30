@@ -19,6 +19,7 @@ const {
   getLogisticsCompanyAdmin,
   createLogisticsCompany,
   updateLogisticsStatus,
+  updateLogisticsCommission,
   listAdminDeliveries,
   getAdminDeliveryDetail,
   getAdminCommissions,
@@ -56,6 +57,7 @@ router.get('/logistics', ...adminOnly, listLogisticsCompanies);
 router.post('/logistics', ...adminOnly, createLogisticsCompany);
 router.get('/logistics/:companyId', ...adminOnly, getLogisticsCompanyAdmin);
 router.patch('/logistics/:companyId/status', ...adminOnly, updateLogisticsStatus);
+router.patch('/logistics/:companyId/commission', ...adminOnly, updateLogisticsCommission);
 
 router.get('/deliveries', ...adminOnly, listAdminDeliveries);
 router.get('/deliveries/:deliveryId', ...adminOnly, getAdminDeliveryDetail);
