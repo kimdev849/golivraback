@@ -21,6 +21,8 @@ const favoritesRoutes = require('./routes/favorites.routes');
 const cartRoutes = require('./routes/cart.routes');
 const settingsRoutes = require('./routes/settings.routes');
 const promoRoutes = require('./routes/promo.routes');
+const observabilityRoutes = require('./routes/observability.routes');
+const { requestContextMiddleware } = require('./middlewares/request-context.middleware');
 const { getDb } = require('./config/db');
 
 const app = express();
@@ -78,6 +80,7 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '512kb' }));
+app.use(requestContextMiddleware);
 
 const isDev = process.env.NODE_ENV !== 'production';
 
@@ -136,6 +139,7 @@ app.use('/api/favorites', favoritesRoutes);
 app.use('/api/cart', cartRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/promo', promoRoutes);
+app.use('/api/observability', observabilityRoutes);
 
 function httpErrorCode(status, err) {
   const raw = err.code;
@@ -152,8 +156,9 @@ function httpErrorCode(status, err) {
   return 'ERREUR';
 }
 
-app.use((err, _req, res, _next) => {
+app.use((err, req, res, _next) => {
   const { normalizeSupabaseError } = require('./utils/supabase-errors');
+  const { recordIncidentAsync, incidentFromHttpError } = require('./services/observability.service');
   const normalized = normalizeSupabaseError(err);
   const status = normalized.status;
   const message = normalized.message;
@@ -163,7 +168,24 @@ app.use((err, _req, res, _next) => {
     console.error('[API]', err.code, err.message, err.details || '');
   }
 
-  res.status(status).json({ message, code });
+  const shouldRecord =
+    status >= 500 || (status >= 400 && status !== 401 && !String(req.originalUrl || '').includes('/observability/report'));
+
+  if (shouldRecord) {
+    recordIncidentAsync(
+      incidentFromHttpError(
+        { ...err, message, code, status },
+        req,
+        { source: 'backend', metadata: { code, details: err.details || null } },
+      ),
+    );
+  }
+
+  res.status(status).json({
+    message,
+    code,
+    requestId: req.requestId || null,
+  });
 });
 
 const RESTAURANT_CATEGORIES = [

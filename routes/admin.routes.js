@@ -29,6 +29,12 @@ const {
 } = require('../controllers/admin.controller');
 const { authMiddleware } = require('../middlewares/auth.middleware');
 const { requireRoles } = require('../middlewares/role.middleware');
+const {
+  listAdminIncidents,
+  getAdminIncidentDetail,
+  getAdminIncidentsSummary,
+  patchResolveIncident,
+} = require('../controllers/observability.controller');
 
 const router = express.Router();
 const adminOnly = [authMiddleware, requireRoles(['admin'])];
@@ -66,5 +72,10 @@ router.get('/commissions', ...adminOnly, getAdminCommissions);
 router.get('/portefeuille', ...adminOnly, getAdminPlatformWallet);
 router.get('/retraits', ...adminOnly, listAdminWithdrawals);
 router.patch('/retraits/:retraitId', ...adminOnly, processAdminWithdrawal);
+
+router.get('/incidents/summary', ...adminOnly, getAdminIncidentsSummary);
+router.get('/incidents', ...adminOnly, listAdminIncidents);
+router.get('/incidents/:incidentId', ...adminOnly, getAdminIncidentDetail);
+router.patch('/incidents/:incidentId/resolve', ...adminOnly, patchResolveIncident);
 
 module.exports = router;

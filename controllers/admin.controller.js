@@ -204,6 +204,14 @@ async function getAdminStats(req, res, next) {
       merchantPendingCount = (pendingUsers.data || []).filter((u) => merchantRoleIds.has(u.role_id)).length;
     }
 
+    let incidents_ouverts = 0;
+    try {
+      const { countOpenIncidents } = require('../services/observability.service');
+      incidents_ouverts = await countOpenIncidents();
+    } catch {
+      incidents_ouverts = 0;
+    }
+
     return res.json({
       commerces_en_attente: (pendingRestaurants.count || 0) + (pendingBoutiques.count || 0),
       commerces_actifs: (activeRestaurants.count || 0) + (activeBoutiques.count || 0),
@@ -212,6 +220,7 @@ async function getAdminStats(req, res, next) {
       livraisons_total: livraisonsTotal,
       livraisons_externes: livraisonsExternes,
       livraisons_en_cours: livraisonsEnCours,
+      incidents_ouverts,
     });
   } catch (error) {
     return next(error);
