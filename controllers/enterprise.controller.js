@@ -223,9 +223,18 @@ async function createEnterprise(req, res, next) {
     const validators = require('../lib/validators');
     const nomClean = validators.requireValid(req.body.nom, validators.validateCommerceName, 'nom');
     const telephoneClean = validators.requireValid(req.body.telephone, validators.validatePhoneCg, 'telephone');
-    const adresseClean = type === 'restaurant'
-      ? validators.requireValid(req.body.adresse, (v) => validators.validateAddress(v, true), 'adresse')
-      : validators.sanitizeText(req.body.adresse || '');
+    // Adresse : OBLIGATOIRE pour un restaurant (livraison sur place), OPTIONNELLE pour une boutique (e-commerce).
+    // On isole la branche boutique pour ne JAMAIS déclencher validateAddress (qui throw) sur une boutique.
+    let adresseClean = '';
+    if (type === 'restaurant') {
+      adresseClean = validators.requireValid(
+        req.body.adresse,
+        (v) => validators.validateAddress(v, true),
+        'adresse',
+      );
+    } else {
+      adresseClean = validators.sanitizeText(req.body.adresse || '');
+    }
     const descriptionClean = description
       ? validators.requireValid(description, (v) => validators.validateDescription(v, 500), 'description')
       : null;
