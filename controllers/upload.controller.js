@@ -38,8 +38,8 @@ async function uploadBase64Image(req, res, next) {
     if (!buffer.length || buffer.length < 32) {
       throw createHttpError(400, 'Fichier image vide.');
     }
-    if (buffer.length > 1_500_000) {
-      throw createHttpError(413, 'Image trop lourde (max 1.5MB).');
+    if (buffer.length > 8_000_000) {
+      throw createHttpError(413, 'Image trop lourde (max 8MB). Réduisez la résolution ou convertissez en JPEG.');
     }
 
     const bucket = process.env.SUPABASE_STORAGE_BUCKET || 'public';

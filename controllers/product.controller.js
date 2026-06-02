@@ -35,6 +35,7 @@ function mapPlatToProduct(p, enterpriseId) {
     est_disponible: p.est_disponible !== false,
     est_en_vedette: p.est_en_vedette === true,
     image_url: p.image_url ?? null,
+    images_urls: Array.isArray(p.images_urls) ? p.images_urls : [],
     categorie_id: p.categorie_id ?? null,
     tags: Array.isArray(p.tags) ? p.tags : [],
     allergenes: Array.isArray(p.allergenes) ? p.allergenes : [],
@@ -121,7 +122,7 @@ function normalizeOptionGroups(options) {
 }
 
 function applyPlatCatalogFields(target, body) {
-  const { tags, allergenes, promoDebutAt, promoFinAt, estDisponible } = body;
+  const { tags, allergenes, promoDebutAt, promoFinAt, estDisponible, imagesUrls, imageUrl } = body;
 
   const tagList = parseTags(tags);
   if (tagList) target.tags = tagList;
@@ -134,6 +135,14 @@ function applyPlatCatalogFields(target, body) {
   if (promoDebutAt !== undefined) target.promo_debut_at = promoStart;
   if (promoFinAt !== undefined) target.promo_fin_at = promoEnd;
   if (estDisponible !== undefined) target.est_disponible = Boolean(estDisponible);
+
+  if (imagesUrls !== undefined || imageUrl !== undefined) {
+    const gallery = parseImagesUrls(imagesUrls, imageUrl);
+    if (gallery) {
+      target.images_urls = gallery;
+      if (!target.image_url && gallery[0]) target.image_url = gallery[0];
+    }
+  }
 }
 
 function parseImagesUrls(imagesUrls, imageUrl) {
@@ -142,7 +151,7 @@ function parseImagesUrls(imagesUrls, imageUrl) {
     : [];
   const main = parseImageUrl(imageUrl);
   if (main && !list.includes(main)) list.unshift(main);
-  return list.length ? list : null;
+  return list.length ? list.slice(0, 8) : null;
 }
 
 function parseIsoDate(value) {
@@ -398,6 +407,8 @@ async function createProduct(req, res, next) {
         promoDebutAt,
         promoFinAt,
         estDisponible,
+        imagesUrls,
+        imageUrl: imgUrl,
       });
       if (stockIllimite === true) {
         insertPlat.stock = null;
@@ -536,6 +547,8 @@ async function updateProduct(req, res, next) {
         promoDebutAt,
         promoFinAt,
         estDisponible,
+        imagesUrls,
+        imageUrl: imageUrl !== undefined ? parseImageUrl(imageUrl) : undefined,
       });
       if (stockIllimite === true) {
         patch.stock = null;
