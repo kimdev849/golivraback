@@ -355,6 +355,12 @@ async function createProduct(req, res, next) {
     if (prixPromo != null && prixPromo !== '') {
       validators.requireValid(prixPromo, validators.validatePrice, 'prixPromo');
     }
+    validators.requireValidPromo({
+      prixNormal: prixClean,
+      prixPromo,
+      promoDebutAt,
+      promoFinAt,
+    });
     if (stock !== undefined && stock !== null && stock !== '' && !stockIllimite) {
       validators.requireValid(stock, validators.validateStock, 'stock');
     }
@@ -497,6 +503,14 @@ async function updateProduct(req, res, next) {
     if (prix !== undefined) validators.requireValid(prix, validators.validatePrice, 'prix');
     if (prixPromo !== undefined && prixPromo !== null) {
       validators.requireValid(prixPromo, validators.validatePrice, 'prixPromo');
+    }
+    if (prix !== undefined || prixPromo !== undefined || promoDebutAt !== undefined || promoFinAt !== undefined) {
+      validators.requireValidPromo({
+        prixNormal: prix !== undefined ? prix : (existing ? existing.prix : undefined),
+        prixPromo: prixPromo !== undefined ? prixPromo : (existing ? existing.prix_promo : null),
+        promoDebutAt: promoDebutAt !== undefined ? promoDebutAt : (existing ? existing.promo_debut_at : null),
+        promoFinAt: promoFinAt !== undefined ? promoFinAt : (existing ? existing.promo_fin_at : null),
+      });
     }
     if (stock !== undefined && stock !== null && stock !== '' && !stockIllimite) {
       validators.requireValid(stock, validators.validateStock, 'stock');
