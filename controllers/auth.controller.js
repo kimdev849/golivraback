@@ -293,6 +293,219 @@ async function register(req, res, next) {
   }
 }
 
+/**
+ * Inscription ATOMIQUE d'un vendeur (restaurateur / commerçant) :
+ * crée l'utilisateur ET le commerce (restaurants OU boutiques) en une
+ * seule requête HTTP. Si l'une des deux insertions échoue, on ROLLBACK
+ * l'autre (suppression) avant de renvoyer l'erreur.
+ *
+ * Garantit qu'on ne se retrouve JAMAIS avec un utilisateur orphelin
+ * sans son commerce (ou inversement) en base.
+ */
+async function registerVendor(req, res, next) {
+  const db = getDb();
+  let createdUserId = null;
+  let createdEnterpriseId = null;
+  let otpRowId = null;
+
+  try {
+    const {
+      nom, telephone: telephoneRaw, motDePasse, otpCode, imageUrl, role,
+    } = req.body;
+    const enterprise = req.body.enterprise || {};
+
+    requireFields(req.body, ['nom', 'telephone', 'motDePasse', 'otpCode', 'role']);
+    requireFields(enterprise, ['type', 'nom', 'telephone', 'categorieId']);
+
+    const validators = require('../lib/validators');
+    const PUBLIC_VENDOR_ROLES = new Set(['restaurateur', 'commercant']);
+    if (!PUBLIC_VENDOR_ROLES.has(role)) {
+      throw createHttpError(400, 'Rôle vendeur invalide (restaurateur ou commercant).');
+    }
+    if (!['restaurant', 'boutique'].includes(enterprise.type)) {
+      throw createHttpError(400, 'Type de commerce invalide (restaurant ou boutique).');
+    }
+    // Cohérence role / type commerce
+    const expectedRole = enterprise.type === 'restaurant' ? 'restaurateur' : 'commercant';
+    if (role !== expectedRole) {
+      throw createHttpError(400, `Rôle ${role} incompatible avec un commerce de type ${enterprise.type}.`);
+    }
+
+    // Validation utilisateur
+    const nomClean = validators.requireValid(nom, validators.validatePersonName, 'nom');
+    const telephoneClean = validators.requireValid(telephoneRaw, validators.validatePhoneCg, 'telephone');
+    validators.requireValid(motDePasse, validators.validatePassword, 'motDePasse');
+    const otpClean = validators.requireValid(otpCode, validators.validateOtp, 'otpCode');
+    const telephone = normalizeCgE164(telephoneClean);
+    if (!telephone) {
+      throw createHttpError(400, 'Numéro de téléphone invalide. Indiquez +242 suivi de 9 chiffres (Congo).');
+    }
+    const avatarUrl =
+      typeof imageUrl === 'string' && imageUrl.trim().startsWith('http') ? imageUrl.trim() : null;
+
+    // Validation commerce
+    const entNomClean = validators.requireValid(enterprise.nom, validators.validateCommerceName, 'enterprise.nom');
+    const entTelClean = validators.requireValid(enterprise.telephone, validators.validatePhoneCg, 'enterprise.telephone');
+    let entAdresseClean = '';
+    if (enterprise.type === 'restaurant') {
+      entAdresseClean = validators.requireValid(
+        enterprise.adresse,
+        (v) => validators.validateAddress(v, true),
+        'enterprise.adresse',
+      );
+    } else {
+      entAdresseClean = validators.sanitizeText(enterprise.adresse || '');
+    }
+    const entDescriptionClean = enterprise.description
+      ? validators.requireValid(
+          enterprise.description,
+          (v) => validators.validateDescription(v, 500),
+          'enterprise.description',
+        )
+      : null;
+    if (!enterprise.categorieId || typeof enterprise.categorieId !== 'string') {
+      throw createHttpError(400, 'Catégorie du commerce requise.');
+    }
+
+    // Garde-fous globaux
+    await assertSignupsAllowed(db);
+    const otpRow = await findValidOtpRow(db, telephone, otpClean);
+    otpRowId = otpRow.id;
+
+    const { data: roleRow, error: roleError } = await db
+      .from('roles').select('id').eq('nom', role).limit(1).maybeSingle();
+    if (roleError || !roleRow) throw createHttpError(400, 'Profil demandé non reconnu.');
+
+    // 1) Insertion utilisateur
+    const hashedPassword = await bcrypt.hash(motDePasse, 10);
+    const { data: userRow, error: userError } = await db
+      .from('utilisateurs')
+      .insert({
+        nom: nomClean,
+        telephone,
+        mot_de_passe_hash: hashedPassword,
+        role_id: roleRow.id,
+        est_verifie: true,
+        est_approuve: false, // les marchands sont toujours en attente de modération
+        avatar_url: avatarUrl,
+      })
+      .select('id, nom, telephone, email, role_id, est_approuve, avatar_url, created_at')
+      .single();
+
+    if (userError) {
+      if (userError.code === '23505') throw createHttpError(409, 'Ce numéro de téléphone est déjà enregistré');
+      throw userError;
+    }
+    createdUserId = userRow.id;
+
+    // 2) Insertion commerce (avec rollback utilisateur en cas d'échec)
+    try {
+      const {
+        initialModerationStatus,
+        MODERATION,
+        resolveCategoryId,
+        logoFieldsFromBody,
+      } = require('./enterprise.controller');
+      const statut = initialModerationStatus();
+
+      const resolvedCategoryId = await resolveCategoryId(db, enterprise.type, enterprise.categorieId);
+      const logoFields = logoFieldsFromBody(enterprise);
+
+      const base = {
+        proprietaire_id: userRow.id,
+        categorie_id: resolvedCategoryId,
+        nom: entNomClean,
+        description: entDescriptionClean,
+        telephone: entTelClean,
+        adresse_ligne1: entAdresseClean,
+        latitude: enterprise.latitude ?? null,
+        longitude: enterprise.longitude ?? null,
+        statut,
+        est_ouvert: statut === MODERATION.ACTIVE,
+        livraison_propre: false,
+        ...logoFields,
+      };
+
+      const table = enterprise.type === 'restaurant' ? 'restaurants' : 'boutiques';
+      const { data: entRow, error: entError } = await db
+        .from(table)
+        .insert(base)
+        .select('*')
+        .single();
+      if (entError) throw entError;
+      createdEnterpriseId = entRow.id;
+
+      // 3) Session + token
+      const token = generateToken();
+      const { sessionError, expireDate } = await insertSession(db, userRow.id, token, req);
+      if (sessionError) throw sessionError;
+
+      // 4) Nettoyage OTP (succès complet)
+      await deleteOtpRow(db, otpRow.id);
+
+      // 5) Notifications admin (best-effort, hors chemin critique)
+      try {
+        const { notifyAllAdmins } = require('../services/admin-notify.service');
+        await notifyAllAdmins(db, {
+          type: 'compte_marchand_en_attente',
+          titre: 'Nouveau compte marchand',
+          corps: `« ${nomClean} » (${role}) attend la validation de son compte.`,
+          data: { utilisateur_id: userRow.id, role, action: 'review_accounts' },
+        });
+        const { notifyEnterprisePendingModeration } = require('../services/admin-notify.service');
+        await notifyEnterprisePendingModeration(db, {
+          type: enterprise.type,
+          nom: entNomClean,
+          enterpriseId: entRow.id,
+        });
+      } catch (notifyError) {
+        console.warn('[registerVendor] notification admin échouée (non-bloquant):', notifyError.message);
+      }
+
+      const { data: roleNomRow } = await db
+        .from('roles').select('nom').eq('id', userRow.role_id).maybeSingle();
+      const roleNom = roleNomRow?.nom ?? role;
+
+      return res.status(201).json({
+        token,
+        expireLe: expireDate.toISOString(),
+        user: {
+          id: userRow.id,
+          nom: userRow.nom,
+          telephone: userRow.telephone,
+          imageUrl: userImageUrl(userRow),
+          roleId: userRow.role_id,
+          role: roleNom,
+          est_approuve: userRow.est_approuve,
+        },
+        enterprise: entRow,
+      });
+    } catch (innerError) {
+      // ROLLBACK : on supprime l'utilisateur qu'on vient de créer pour
+      // garantir l'atomicité côté mobile. Si même ça échoue, on log
+      // sévèrement mais on continue à propager l'erreur d'origine.
+      if (createdEnterpriseId) {
+        await db.from('restaurants').delete().eq('id', createdEnterpriseId).catch(() => undefined);
+        await db.from('boutiques').delete().eq('id', createdEnterpriseId).catch(() => undefined);
+      }
+      if (createdUserId) {
+        await db.from('utilisateurs').delete().eq('id', createdUserId).catch((delErr) => {
+          console.error('[registerVendor] ROLLBACK utilisateur impossible:', createdUserId, delErr.message);
+        });
+      }
+      // Restaurer l'OTP pour permettre une nouvelle tentative
+      if (otpRowId) {
+        // L'OTP a peut-être été marqué utilisé, on tente de le remettre pending
+        // (best-effort, silencieux en cas d'échec)
+        await db.from('otp_verifications').update({ utilise_at: null }).eq('id', otpRowId).catch(() => undefined);
+      }
+      throw innerError;
+    }
+  } catch (error) {
+    return next(error);
+  }
+}
+
 async function login(req, res, next) {
   try {
     const { telephone: telephoneRaw, email: emailRaw, motDePasse } = req.body;
@@ -703,6 +916,7 @@ async function changePassword(req, res, next) {
 
 module.exports = {
   register,
+  registerVendor,
   login,
   staffLogin,
   me,

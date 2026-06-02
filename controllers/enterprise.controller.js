@@ -465,4 +465,9 @@ module.exports = {
   patchEnterprise,
   patchEnterpriseSettings,
   getMyEnterpriseStats,
+  // Helpers réutilisables (atomicité register-vendor)
+  initialModerationStatus,
+  resolveCategoryId,
+  logoFieldsFromBody,
+  MODERATION,
 };
