@@ -65,9 +65,13 @@ function normalizeSupabaseError(err) {
   }
 
   if (code === '23505') {
+    // Un doublon côté base. On NE FORCE PAS un message spécifique ici : le contrôleur métier
+    // (auth, enterprise…) peut avoir déjà traduit l'erreur en message FR précis. Si l'erreur
+    // arrive brute (sans `err.status`), on laisse le `raw` (souvent "duplicate key value
+    // violates unique constraint \"…\"") plutôt que d'inventer un message métier hors contexte.
     return {
       status: 409,
-      message: 'Cette course a déjà été prise par un autre livreur.',
+      message: raw || details || 'Donnée déjà existante (contrainte d’unicité).',
       code: 'CONFLIT_DONNEES',
     };
   }
