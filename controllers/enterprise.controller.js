@@ -265,7 +265,7 @@ async function createEnterprise(req, res, next) {
       if (error) throw error;
       if (statut === MODERATION.EN_ATTENTE) {
         const { notifyEnterprisePendingModeration } = require('../services/admin-notify.service');
-        await notifyEnterprisePendingModeration(db, { type: 'restaurant', nom, enterpriseId: data.id }).catch(
+        await notifyEnterprisePendingModeration(db, { type: 'restaurant', nom: nomClean, enterpriseId: data.id }).catch(
           () => undefined,
         );
       }
@@ -276,7 +276,7 @@ async function createEnterprise(req, res, next) {
     if (error) throw error;
     if (statut === MODERATION.EN_ATTENTE) {
       const { notifyEnterprisePendingModeration } = require('../services/admin-notify.service');
-      await notifyEnterprisePendingModeration(db, { type: 'boutique', nom, enterpriseId: data.id }).catch(
+      await notifyEnterprisePendingModeration(db, { type: 'boutique', nom: nomClean, enterpriseId: data.id }).catch(
         () => undefined,
       );
     }

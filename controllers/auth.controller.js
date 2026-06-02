@@ -270,7 +270,7 @@ async function register(req, res, next) {
       await notifyAllAdmins(db, {
         type: 'compte_marchand_en_attente',
         titre: 'Nouveau compte marchand',
-        corps: `« ${nom} » (${roleNom}) attend la validation de son compte.`,
+        corps: `« ${nomClean} » (${roleNom}) attend la validation de son compte.`,
         data: { utilisateur_id: data.id, role: roleNom, action: 'review_accounts' },
       }).catch(() => undefined);
     }
