@@ -175,6 +175,40 @@ async function postIncidentNote(req, res, next) {
 }
 
 // -----------------------------------------------------------------------------
+// Admin : ré-analyse d'une stack existante (utile pour rafraîchir frames /
+// github_url après un changement de config BACKEND_GITHUB_REPO_URL ou après
+// import historique d'incidents sans frames).
+// -----------------------------------------------------------------------------
+async function postReanalyzeStack(req, res, next) {
+  try {
+    const incident = await observability.getIncidentById(req.params.incidentId);
+    if (!incident) throw createHttpError(404, 'Incident introuvable.');
+
+    if (!incident.stack) {
+      return res.json({ ok: true, message: 'Aucune stack à analyser.' });
+    }
+    const sourceMapper = require('../utils/source-mapper');
+    const analysis = sourceMapper.analyzeStack(incident.stack);
+    const db = getDb();
+    const { data, error } = await db
+      .from('app_incidents')
+      .update({
+        frames: analysis.frames,
+        source_location: analysis.top_frame,
+        code_context: analysis.code_context,
+        github_url: analysis.github_url,
+      })
+      .eq('id', incident.id)
+      .select('*')
+      .single();
+    if (error) throw error;
+    return res.json(data);
+  } catch (err) {
+    return next(err);
+  }
+}
+
+// -----------------------------------------------------------------------------
 // Admin : dashboard, endpoint health
 // -----------------------------------------------------------------------------
 async function getObservabilityDashboard(req, res, next) {
@@ -403,6 +437,7 @@ module.exports = {
   patchInvestigatingIncident,
   patchReopenIncident,
   postIncidentNote,
+  postReanalyzeStack,
   getObservabilityDashboard,
   getEndpointHealth,
   postPersistHourlySnapshot,

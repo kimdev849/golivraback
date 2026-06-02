@@ -42,7 +42,7 @@ async function getDashboardOverview({ windowMin = 60 } = {}) {
     db
       .from('app_incidents')
       .select('severity, state, error_type')
-      .neq('state', 'resolved'),
+      .neq('state', 'resolu'),
     db
       .from('request_metrics')
       .select('method, path, status, latency_ms')
@@ -52,7 +52,7 @@ async function getDashboardOverview({ windowMin = 60 } = {}) {
     db
       .from('app_incidents')
       .select('fingerprint, occurrence_count, error_type, last_seen_at')
-      .neq('state', 'resolved')
+      .neq('state', 'resolu')
       .not('fingerprint', 'is', null)
       .order('occurrence_count', { ascending: false })
       .limit(10),

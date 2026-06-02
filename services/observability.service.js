@@ -1,10 +1,11 @@
 const { createHash } = require('crypto');
 const { getDb } = require('../config/db');
 const { error: logError, warn: logWarn, info: logInfo } = require('../utils/logger');
+const sourceMapper = require('../utils/source-mapper');
 
 const SEVERITIES = new Set(['error', 'warn', 'info']);
 const SOURCES = new Set(['mobile', 'admin', 'backend', 'api']);
-const STATES = new Set(['open', 'acknowledged', 'investigating', 'resolved']);
+const STATES = new Set(['ouvert', 'acquitte', 'en_cours', 'resolu']);
 const ERROR_TYPES = new Set([
   'DatabaseError',
   'AuthError',
@@ -201,6 +202,25 @@ function normalizeIncidentInput(input = {}) {
       errorType,
     });
 
+  // Analyse de la stack : frames, top_frame, github_url, code_context.
+  // On privilégie une analyse déjà fournie par le client (admin web / mobile)
+  // sinon on parse la stack Node côté serveur.
+  let frames = null;
+  let topFrame = null;
+  let githubUrl = null;
+  let codeContext = null;
+  if (Array.isArray(input.frames) && input.frames.length > 0) {
+    frames = sourceMapper.normalizeClientFrames(input.frames);
+    topFrame = frames.find((f) => f.in_app) || frames[0] || null;
+    githubUrl = topFrame?.github_url || null;
+  } else if (input.stack) {
+    const analysis = sourceMapper.analyzeStack(String(input.stack));
+    frames = analysis.frames;
+    topFrame = analysis.top_frame;
+    githubUrl = analysis.github_url;
+    codeContext = analysis.code_context;
+  }
+
   return {
     request_id: String(input.request_id || input.requestId || 'unknown').slice(0, 128),
     source,
@@ -212,6 +232,10 @@ function normalizeIncidentInput(input = {}) {
     message,
     cause: String(cause).slice(0, 2000),
     stack: input.stack ? String(input.stack).slice(0, 12000) : null,
+    frames,
+    source_location: topFrame,
+    code_context: codeContext,
+    github_url: githubUrl,
     http_method: input.http_method || input.httpMethod || null,
     http_path: input.http_path || input.httpPath || null,
     http_status: input.http_status ?? input.httpStatus ?? null,
@@ -244,13 +268,13 @@ async function recordIncident(input) {
 
   try {
     const db = getDb();
-    // Tenter d'abord d'incrémenter un incident existant (state <> resolved) sur le même fingerprint.
+    // Tenter d'abord d'incrémenter un incident existant (state <> 'resolu') sur le même fingerprint.
     if (row.fingerprint) {
       const { data: existing } = await db
         .from('app_incidents')
         .select('id, occurrence_count')
         .eq('fingerprint', row.fingerprint)
-        .neq('state', 'resolved')
+        .neq('state', 'resolu')
         .order('created_at', { ascending: true })
         .limit(1)
         .maybeSingle();
@@ -350,7 +374,7 @@ async function listIncidentsForAdmin({
   if (resolved === true) query = query.eq('resolved', true);
   if (resolved === false) query = query.eq('resolved', false);
   if (resolved === undefined && state) {
-    if (state === 'open') query = query.neq('state', 'resolved');
+    if (state === 'ouvert') query = query.neq('state', 'resolu');
     else query = query.eq('state', state);
   }
   if (source) query = query.eq('source', source);
@@ -389,7 +413,7 @@ async function listIncidentGroups({ windowMin = 60, source, severity, state } = 
   if (source) query = query.eq('source', source);
   if (severity) query = query.eq('severity', severity);
   if (state) {
-    if (state === 'open') query = query.neq('state', 'resolved');
+    if (state === 'ouvert') query = query.neq('state', 'resolu');
     else query = query.eq('state', state);
   }
   const { data, error } = await query;
@@ -435,7 +459,7 @@ async function countOpenIncidents() {
   const { count, error } = await db
     .from('app_incidents')
     .select('id', { count: 'exact', head: true })
-    .neq('state', 'resolved')
+    .neq('state', 'resolu')
     .in('severity', ['error', 'warn']);
   if (error) throw error;
   return count ?? 0;
@@ -450,15 +474,20 @@ async function transitionIncidentState(id, newState, adminUserId, adminNote) {
   }
   const db = getDb();
   const patch = { state: newState };
-  if (newState === 'acknowledged') {
+  if (newState === 'acquitte') {
     patch.acknowledged_at = new Date().toISOString();
     patch.acknowledged_by = adminUserId;
   }
-  if (newState === 'resolved') {
+  if (newState === 'resolu') {
     patch.resolved = true;
     patch.resolved_at = new Date().toISOString();
     patch.resolved_by = adminUserId;
     if (adminNote) patch.admin_note = String(adminNote).slice(0, 2000);
+  }
+  if (newState === 'ouvert') {
+    patch.resolved = false;
+    patch.resolved_at = null;
+    patch.resolved_by = null;
   }
   const { data, error } = await db
     .from('app_incidents')
@@ -471,15 +500,15 @@ async function transitionIncidentState(id, newState, adminUserId, adminNote) {
 }
 
 async function resolveIncident(id, adminUserId, adminNote) {
-  return transitionIncidentState(id, 'resolved', adminUserId, adminNote);
+  return transitionIncidentState(id, 'resolu', adminUserId, adminNote);
 }
 
 async function acknowledgeIncident(id, adminUserId) {
-  return transitionIncidentState(id, 'acknowledged', adminUserId, null);
+  return transitionIncidentState(id, 'acquitte', adminUserId, null);
 }
 
 async function investigatingIncident(id, adminUserId) {
-  return transitionIncidentState(id, 'investigating', adminUserId, null);
+  return transitionIncidentState(id, 'en_cours', adminUserId, null);
 }
 
 async function reopenIncident(id) {
@@ -487,7 +516,7 @@ async function reopenIncident(id) {
   const { data, error } = await db
     .from('app_incidents')
     .update({
-      state: 'open',
+      state: 'ouvert',
       resolved: false,
       resolved_at: null,
       resolved_by: null,
@@ -524,6 +553,19 @@ function incidentFromHttpError(err, req, overrides = {}) {
   const category = overrides.category || inferCategory({ http_path: req.originalUrl, ...overrides });
   const errorType = classifyError({ code, message: err.message, category, source: 'backend' });
 
+  // Analyse de la stack pour le debug Sentry-like.
+  let frames = null;
+  let topFrame = null;
+  let githubUrl = null;
+  let codeContext = null;
+  if (err.stack) {
+    const analysis = sourceMapper.analyzeStack(String(err.stack));
+    frames = analysis.frames;
+    topFrame = analysis.top_frame;
+    githubUrl = analysis.github_url;
+    codeContext = analysis.code_context;
+  }
+
   return {
     request_id: req.requestId,
     source: overrides.source || 'backend',
@@ -540,6 +582,10 @@ function incidentFromHttpError(err, req, overrides = {}) {
     user_id: req.auth?.userId || null,
     user_role: req.auth?.role || null,
     stack: err.stack || null,
+    frames,
+    source_location: topFrame,
+    code_context: codeContext,
+    github_url: githubUrl,
     metadata: {
       code,
       ...(overrides.metadata || {}),

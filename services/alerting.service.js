@@ -87,7 +87,7 @@ async function isRuleTriggered(rule) {
       .from('app_incidents')
       .select('id, severity')
       .gte('created_at', since)
-      .neq('state', 'resolved');
+      .neq('state', 'resolu');
     if (cond.severity) q = q.eq('severity', cond.severity);
     const { data } = await q;
     const count = (data || []).length;
@@ -147,7 +147,7 @@ async function dispatchAlert(rule, payload) {
       await db.from('alert_history').insert({
         rule_id: rule.id,
         channel_id: channel.id,
-        status: result.ok ? 'sent' : 'failed',
+        status: result.ok ? 'envoye' : 'echec',
         message: payload.title,
         metadata: { ...payload.metadata, reason: result.error || null },
       });
@@ -156,7 +156,7 @@ async function dispatchAlert(rule, payload) {
       await db.from('alert_history').insert({
         rule_id: rule.id,
         channel_id: channel.id,
-        status: 'failed',
+        status: 'echec',
         message: payload.title,
         metadata: { error: err.message, ...payload.metadata },
       });

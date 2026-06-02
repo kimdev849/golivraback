@@ -22,6 +22,7 @@ router.patch('/incidents/:incidentId/investigating', ...adminOnly, ctrl.patchInv
 router.patch('/incidents/:incidentId/resolve', ...adminOnly, ctrl.patchResolveIncident);
 router.patch('/incidents/:incidentId/reopen', ...adminOnly, ctrl.patchReopenIncident);
 router.post('/incidents/:incidentId/notes', ...adminOnly, ctrl.postIncidentNote);
+router.post('/incidents/:incidentId/reanalyze-stack', ...adminOnly, ctrl.postReanalyzeStack);
 
 // Alerting : channels + rules + history
 router.get('/alert-channels', ...adminOnly, ctrl.listAlertChannels);
