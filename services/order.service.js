@@ -14,6 +14,7 @@ const ALLOWED_METHODE_PAIEMENT = new Set([
 ]);
 
 const { getPricingConfig, resolveDeliveryFeeForEstablishment } = require('./pricing.service');
+const { resolveDeliveryPriceForQuartier } = require('./zones.service');
 
 function snapshotAddress(input) {
   if (input && typeof input === 'object' && !Array.isArray(input)) {
@@ -175,6 +176,24 @@ async function createOrderFromPayload(db, clientId, payload) {
 
   const { snap: addrSnap, id: adresseLivraisonId } = await resolveDeliveryAddress(db, clientId, payload);
 
+  let zonePricingMeta = null;
+  const quartierLivraison = addrSnap?.quartier ? String(addrSnap.quartier).trim() : '';
+  if (quartierLivraison) {
+    try {
+      const quote = await resolveDeliveryPriceForQuartier(db, quartierLivraison);
+      zonePricingMeta = {
+        quartier: quartierLivraison,
+        price_fcfa: quote.price_fcfa,
+        zone_id: quote.zone?.id ?? null,
+        zone_name: quote.zone?.name ?? null,
+        zone_label: quote.zone?.label ?? null,
+      };
+      addrSnap.zone_pricing = zonePricingMeta;
+    } catch {
+      /* tables zones absentes : repli sur tarif établissement */
+    }
+  }
+
   const methode = CLIENT_METHODE_PAIEMENT.has(methodePaiement) ? methodePaiement : 'airtel_money';
 
   let segmentList = segments;
@@ -208,8 +227,14 @@ async function createOrderFromPayload(db, clientId, payload) {
 
     const mode = resolveModeLivraison(ent);
     const { lines, sousTotal } = await buildLinesForSegment(db, kind, eid, segArticles);
-    const frais =
-      mode === 'golivra' ? await resolveDeliveryFeeForEstablishment(db, ent) : 0;
+    let frais = 0;
+    if (mode === 'golivra') {
+      if (zonePricingMeta?.price_fcfa != null) {
+        frais = Math.round(Number(zonePricingMeta.price_fcfa));
+      } else {
+        frais = await resolveDeliveryFeeForEstablishment(db, ent);
+      }
+    }
     const total = sousTotal + frais;
 
     orderSubtotal += sousTotal;

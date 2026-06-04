@@ -7,6 +7,7 @@ const { getDb } = require('../config/db');
 const { createHttpError, requireFields } = require('../utils/http');
 const { payOrderForClient, isTestPaymentMode, PAYMENT_MODE } = require('../services/payment.service');
 const { getPricingConfig, getPublicPricingSnapshot } = require('../services/pricing.service');
+const { getPublicZonesConfig } = require('../services/zones.service');
 const paymentRepo = require('../payments/repositories/payment.repository');
 const { paymentResponse } = require('../payments/dto/payment.dto');
 
@@ -69,7 +70,13 @@ async function getPricingConfigHandler(req, res, next) {
   try {
     const db = getDb();
     const config = await getPricingConfig(db);
-    return res.json(getPublicPricingSnapshot(config));
+    const snapshot = getPublicPricingSnapshot(config);
+    try {
+      snapshot.zones = await getPublicZonesConfig(db);
+    } catch {
+      snapshot.zones = null;
+    }
+    return res.json(snapshot);
   } catch (error) {
     return next(error);
   }

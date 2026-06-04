@@ -1,0 +1,14 @@
+const express = require('express');
+const { getPublic, quoteDelivery, listAdmin, updateAdmin } = require('../controllers/zones.controller');
+const { authMiddleware } = require('../middlewares/auth.middleware');
+const { requireRoles } = require('../middlewares/role.middleware');
+
+const router = express.Router();
+const adminOnly = [authMiddleware, requireRoles(['admin'])];
+
+router.get('/public', getPublic);
+router.get('/quote', quoteDelivery);
+router.get('/admin', ...adminOnly, listAdmin);
+router.patch('/admin', ...adminOnly, updateAdmin);
+
+module.exports = router;
