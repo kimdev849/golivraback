@@ -17,6 +17,37 @@ function canManageEstablishment(req, row) {
   return row.proprietaire_id === req.auth.userId;
 }
 
+function normalizeImagesUrls(raw) {
+  if (raw == null) return [];
+  if (Array.isArray(raw)) {
+    return raw.map((u) => String(u).trim()).filter((u) => u.startsWith('http'));
+  }
+  if (typeof raw === 'string') {
+    const s = raw.trim();
+    if (!s) return [];
+    // Format JSON standard
+    if (s.startsWith('[') && s.endsWith(']')) {
+      try {
+        const parsed = JSON.parse(s);
+        if (Array.isArray(parsed)) {
+          return parsed.map((u) => String(u).trim()).filter((u) => u.startsWith('http'));
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    // Format PostgreSQL array standard : {url1,url2}
+    if (s.startsWith('{') && s.endsWith('}')) {
+      return s
+        .slice(1, -1)
+        .split(',')
+        .map((u) => u.replace(/^"(.*)"$/, '$1').trim())
+        .filter((u) => u.startsWith('http'));
+    }
+  }
+  return [];
+}
+
 function mapPlatToProduct(p, enterpriseId) {
   let stock = null;
   if (p.stock !== null && p.stock !== undefined) stock = Math.max(0, Number(p.stock));
@@ -35,7 +66,7 @@ function mapPlatToProduct(p, enterpriseId) {
     est_disponible: p.est_disponible !== false,
     est_en_vedette: p.est_en_vedette === true,
     image_url: p.image_url ?? null,
-    images_urls: Array.isArray(p.images_urls) ? p.images_urls : [],
+    images_urls: normalizeImagesUrls(p.images_urls),
     categorie_id: p.categorie_id ?? null,
     tags: Array.isArray(p.tags) ? p.tags : [],
     allergenes: Array.isArray(p.allergenes) ? p.allergenes : [],
@@ -65,7 +96,7 @@ function mapArticleToProduct(a, enterpriseId) {
     est_disponible: a.est_disponible !== false,
     est_en_vedette: a.est_en_vedette === true,
     image_url: a.image_url ?? null,
-    images_urls: Array.isArray(a.images_urls) ? a.images_urls : [],
+    images_urls: normalizeImagesUrls(a.images_urls),
     kind: 'article',
     options: a.options ?? null,
     reference: a.reference ?? null,
@@ -227,18 +258,31 @@ const OPTIONAL_ARTICLE_COLUMNS = [
   'promo_fin_at',
 ];
 
+const OPTIONAL_PLAT_COLUMNS = ['images_urls', 'tags', 'allergenes', 'promo_debut_at', 'promo_fin_at'];
+
 function isMissingColumnError(error, column) {
   const msg = String(error?.message ?? error ?? '').toLowerCase();
   return msg.includes(column) && (msg.includes('column') || msg.includes('colonne') || msg.includes('schema'));
 }
 
-async function insertArticleRow(db, row) {
+async function insertArticleRow(db, row, opts = {}) {
   const payload = { ...row };
   const removed = new Set();
+  const hadGallery =
+    opts.expectGallery === true ||
+    (Array.isArray(payload.images_urls) && payload.images_urls.length > 1);
 
   for (let attempt = 0; attempt <= OPTIONAL_ARTICLE_COLUMNS.length; attempt += 1) {
     const { data, error } = await db.from('articles').insert(payload).select('*').single();
-    if (!error) return data;
+    if (!error) {
+      if (hadGallery && removed.has('images_urls')) {
+        throw createHttpError(
+          503,
+          'Galerie photo indisponible : appliquez la migration SQL images_urls sur Supabase.',
+        );
+      }
+      return data;
+    }
 
     const missing = OPTIONAL_ARTICLE_COLUMNS.find((col) => !removed.has(col) && col in payload && isMissingColumnError(error, col));
     if (!missing) throw error;
@@ -247,6 +291,34 @@ async function insertArticleRow(db, row) {
   }
 
   throw createHttpError(500, 'Impossible d’enregistrer l’article.');
+}
+
+async function insertPlatRow(db, row, opts = {}) {
+  const payload = { ...row };
+  const removed = new Set();
+  const hadGallery =
+    opts.expectGallery === true ||
+    (Array.isArray(payload.images_urls) && payload.images_urls.length > 1);
+
+  for (let attempt = 0; attempt <= OPTIONAL_PLAT_COLUMNS.length; attempt += 1) {
+    const { data, error } = await db.from('plats').insert(payload).select('*').single();
+    if (!error) {
+      if (hadGallery && removed.has('images_urls')) {
+        throw createHttpError(
+          503,
+          'Galerie photo indisponible : appliquez la migration SQL images_urls sur Supabase.',
+        );
+      }
+      return data;
+    }
+
+    const missing = OPTIONAL_PLAT_COLUMNS.find((col) => !removed.has(col) && col in payload && isMissingColumnError(error, col));
+    if (!missing) throw error;
+    delete payload[missing];
+    removed.add(missing);
+  }
+
+  throw createHttpError(500, 'Impossible d’enregistrer le plat.');
 }
 
 async function updateArticleRow(db, productId, patch) {
@@ -328,16 +400,7 @@ async function listProducts(req, res, next) {
 }
 
 /**
- * Feed public de produits/dishes, agrege depuis TOUS les commerces actifs.
- * Query params:
- *   - type: 'plat' | 'article' | undefined (les deux)
- *   - promo: 'true' pour ne garder que les produits en promo (prix_promo NOT NULL)
- *   - limit: nombre max (defaut 30, max 100)
- *   - offset: pagination (defaut 0)
- * Reponse: tableau plat de produits enrichis avec les infos vendeur
- *   (enterprise_id, enterprise_nom, enterprise_type, enterprise_image_url).
- *
- * Public: pas besoin d'auth (les commerces non-actifs sont filtres cote DB).
+ * Feed public sans jointure PostgREST (évite SCHEMA_INCOMPLET si le cache FK n'est pas rechargé).
  */
 async function listProductFeed(req, res, next) {
   try {
@@ -353,44 +416,52 @@ async function listProductFeed(req, res, next) {
     const out = [];
 
     if (includePlats) {
-      let q = db
-        .from('plats')
-        .select('*, restaurants!inner(id, nom, statut, image_url, type)')
-        .eq('restaurants.statut', 'active')
-        .order('est_en_vedette', { ascending: false })
-        .order('created_at', { ascending: false })
-        .range(offset, offset + limit - 1);
-      if (onlyPromo) q = q.not('prix_promo', 'is', null);
-      const { data, error } = await q;
-      if (error) throw error;
-      for (const p of data || []) {
-        const rest = p.restaurants || {};
-        out.push({
-          ...mapPlatToProduct(p, p.restaurant_id),
-          enterprise_id: p.restaurant_id,
-          enterprise_nom: rest.nom || null,
-          enterprise_type: 'restaurant',
-          enterprise_image_url: rest.image_url || null,
-        });
+      const { data: restaurants, error: restErr } = await db
+        .from('restaurants')
+        .select('id, nom, image_url')
+        .eq('statut', ACTIVE);
+      if (restErr) throw restErr;
+
+      const restById = new Map((restaurants || []).map((r) => [r.id, r]));
+      const restIds = [...restById.keys()];
+
+      if (restIds.length) {
+        let q = db.from('plats').select('*').in('restaurant_id', restIds).order('nom');
+        if (onlyPromo) q = q.not('prix_promo', 'is', null);
+        const { data, error } = await q;
+        if (error) throw error;
+        for (const p of data || []) {
+          const rest = restById.get(p.restaurant_id);
+          if (!rest) continue;
+          out.push({
+            ...mapPlatToProduct(p, p.restaurant_id),
+            enterprise_id: p.restaurant_id,
+            enterprise_nom: rest.nom || null,
+            enterprise_type: 'restaurant',
+            enterprise_image_url: rest.image_url || null,
+          });
+        }
       }
     }
 
     if (includeArticles) {
-      // Si on a deja recupere des plats, on reduit la limite pour equilibrer.
-      const articleLimit = includePlats ? Math.max(0, limit - out.length) : limit;
-      if (articleLimit > 0) {
-        let q = db
-          .from('articles')
-          .select('*, boutiques!inner(id, nom, statut, image_url, type)')
-          .eq('boutiques.statut', 'active')
-          .order('est_en_vedette', { ascending: false })
-          .order('created_at', { ascending: false })
-          .range(offset, offset + articleLimit - 1);
+      const { data: boutiques, error: boutErr } = await db
+        .from('boutiques')
+        .select('id, nom, image_url')
+        .eq('statut', ACTIVE);
+      if (boutErr) throw boutErr;
+
+      const boutById = new Map((boutiques || []).map((b) => [b.id, b]));
+      const boutIds = [...boutById.keys()];
+
+      if (boutIds.length) {
+        let q = db.from('articles').select('*').in('boutique_id', boutIds).order('nom');
         if (onlyPromo) q = q.not('prix_promo', 'is', null);
         const { data, error } = await q;
         if (error) throw error;
         for (const a of data || []) {
-          const bou = a.boutiques || {};
+          const bou = boutById.get(a.boutique_id);
+          if (!bou) continue;
           out.push({
             ...mapArticleToProduct(a, a.boutique_id),
             enterprise_id: a.boutique_id,
@@ -402,13 +473,147 @@ async function listProductFeed(req, res, next) {
       }
     }
 
-    // Melange les resultats pour eviter d'avoir tous les plats puis tous les articles.
     for (let i = out.length - 1; i > 0; i -= 1) {
       const j = Math.floor(Math.random() * (i + 1));
       [out[i], out[j]] = [out[j], out[i]];
     }
 
-    return res.json(out);
+    return res.json(out.slice(offset, offset + limit));
+  } catch (error) {
+    return next(error);
+  }
+}
+
+/**
+ * Recherche unifiée produits + commerces (serveur).
+ * Query: q (min 2 car.), type (plat|article|restaurant|boutique|all), limit (max 50).
+ */
+async function searchCatalog(req, res, next) {
+  try {
+    const db = getDb();
+    const q = String(req.query.q || '').trim();
+    const type = typeof req.query.type === 'string' ? req.query.type.toLowerCase() : 'all';
+    const limit = Math.max(1, Math.min(50, Number(req.query.limit) || 24));
+
+    if (q.length < 2) {
+      return res.json({ products: [], enterprises: [] });
+    }
+
+    const pattern = `%${q.replace(/[%_\\]/g, '')}%`;
+    const enterprises = [];
+    const products = [];
+
+    const includeRestaurants = type === 'all' || type === 'restaurant';
+    const includeBoutiques = type === 'all' || type === 'boutique';
+    const includePlats = type === 'all' || type === 'plat';
+    const includeArticles = type === 'all' || type === 'article';
+
+    if (includeRestaurants) {
+      const { data, error } = await db
+        .from('restaurants')
+        .select('id, nom, description, adresse, image_url, type, categorie_id')
+        .eq('statut', ACTIVE)
+        .or(`nom.ilike.${pattern},description.ilike.${pattern},adresse.ilike.${pattern}`)
+        .limit(Math.min(limit, 12));
+      if (error) throw error;
+      for (const r of data || []) {
+        enterprises.push({
+          id: r.id,
+          nom: r.nom,
+          type: 'restaurant',
+          description: r.description ?? null,
+          adresse: r.adresse ?? null,
+          image_url: r.image_url ?? null,
+          categorie_id: r.categorie_id ?? null,
+        });
+      }
+    }
+
+    if (includeBoutiques) {
+      const { data, error } = await db
+        .from('boutiques')
+        .select('id, nom, description, adresse, image_url, type, categorie_id')
+        .eq('statut', ACTIVE)
+        .or(`nom.ilike.${pattern},description.ilike.${pattern},adresse.ilike.${pattern}`)
+        .limit(Math.min(limit, 12));
+      if (error) throw error;
+      for (const b of data || []) {
+        enterprises.push({
+          id: b.id,
+          nom: b.nom,
+          type: 'boutique',
+          description: b.description ?? null,
+          adresse: b.adresse ?? null,
+          image_url: b.image_url ?? null,
+          categorie_id: b.categorie_id ?? null,
+        });
+      }
+    }
+
+    if (includePlats) {
+      const { data: restaurants, error: restErr } = await db
+        .from('restaurants')
+        .select('id, nom, image_url')
+        .eq('statut', ACTIVE);
+      if (restErr) throw restErr;
+      const restById = new Map((restaurants || []).map((r) => [r.id, r]));
+      const restIds = [...restById.keys()];
+      if (restIds.length) {
+        const { data, error } = await db
+          .from('plats')
+          .select('*')
+          .in('restaurant_id', restIds)
+          .or(`nom.ilike.${pattern},description.ilike.${pattern}`)
+          .limit(limit);
+        if (error) throw error;
+        for (const p of data || []) {
+          const rest = restById.get(p.restaurant_id);
+          if (!rest) continue;
+          products.push({
+            ...mapPlatToProduct(p, p.restaurant_id),
+            enterprise_id: p.restaurant_id,
+            enterprise_nom: rest.nom || null,
+            enterprise_type: 'restaurant',
+            enterprise_image_url: rest.image_url || null,
+          });
+        }
+      }
+    }
+
+    if (includeArticles) {
+      const { data: boutiques, error: boutErr } = await db
+        .from('boutiques')
+        .select('id, nom, image_url')
+        .eq('statut', ACTIVE);
+      if (boutErr) throw boutErr;
+      const boutById = new Map((boutiques || []).map((b) => [b.id, b]));
+      const boutIds = [...boutById.keys()];
+      if (boutIds.length) {
+        const { data, error } = await db
+          .from('articles')
+          .select('*')
+          .in('boutique_id', boutIds)
+          .or(`nom.ilike.${pattern},description.ilike.${pattern}`)
+          .limit(limit);
+        if (error) throw error;
+        for (const a of data || []) {
+          const bou = boutById.get(a.boutique_id);
+          if (!bou) continue;
+          products.push({
+            ...mapArticleToProduct(a, a.boutique_id),
+            enterprise_id: a.boutique_id,
+            enterprise_nom: bou.nom || null,
+            enterprise_type: 'boutique',
+            enterprise_image_url: bou.image_url || null,
+          });
+        }
+      }
+    }
+
+    return res.json({
+      products: products.slice(0, limit),
+      enterprises: enterprises.slice(0, Math.min(limit, 12)),
+    });
   } catch (error) {
     return next(error);
   }
@@ -461,6 +666,9 @@ async function createProduct(req, res, next) {
       validators.requireValid(stock, validators.validateStock, 'stock');
     }
 
+    const { assertListingContent } = require('../lib/content-policy');
+    assertListingContent(req.body);
+
     const imgUrl = parseImageUrl(imageUrl);
     const normalizedOptions = options !== undefined ? normalizeOptionGroups(options) : undefined;
 
@@ -503,8 +711,8 @@ async function createProduct(req, res, next) {
         insertPlat.stock = Math.max(0, Math.floor(Number(stock)));
       }
 
-      const { data, error } = await db.from('plats').insert(insertPlat).select('*').single();
-      if (error) throw error;
+      const expectGallery = Array.isArray(imagesUrls) && imagesUrls.length > 1;
+      const data = await insertPlatRow(db, insertPlat, { expectGallery });
       return res.status(201).json(mapPlatToProduct(data, enterpriseId));
     }
 
@@ -547,7 +755,8 @@ async function createProduct(req, res, next) {
       dimensions,
     });
 
-    const data = await insertArticleRow(db, insertArt);
+    const expectGallery = Array.isArray(imagesUrls) && imagesUrls.length > 1;
+    const data = await insertArticleRow(db, insertArt, { expectGallery });
     return res.status(201).json(mapArticleToProduct(data, enterpriseId));
   } catch (error) {
     return next(error);
@@ -614,6 +823,9 @@ async function updateProduct(req, res, next) {
       validators.requireValid(stock, validators.validateStock, 'stock');
     }
 
+    const { assertListingContent } = require('../lib/content-policy');
+    assertListingContent(req.body);
+
     if (kind === 'restaurant') {
       if (req.auth.role !== 'admin' && req.auth.role !== 'restaurateur') {
         throw createHttpError(403, 'Seul un restaurateur peut modifier des plats.');
@@ -635,7 +847,7 @@ async function updateProduct(req, res, next) {
         promoFinAt,
         estDisponible,
         imagesUrls,
-        imageUrl: imageUrl !== undefined ? parseImageUrl(imageUrl) : undefined,
+        imageUrl: imageUrl !== undefined ? parseImageUrl(imageUrl) : existing.image_url,
       });
       if (stockIllimite === true) {
         patch.stock = null;
@@ -671,7 +883,7 @@ async function updateProduct(req, res, next) {
     applyArticleCatalogFields(patch, {
       tags,
       imagesUrls,
-      imageUrl,
+      imageUrl: imageUrl !== undefined ? imageUrl : existing.image_url,
       promoDebutAt,
       promoFinAt,
       typeProduit,
@@ -793,6 +1005,7 @@ async function trackProductClick(req, res, next) {
 module.exports = {
   listProducts,
   listProductFeed,
+  searchCatalog,
   createProduct,
   updateProduct,
   deleteProduct,
