@@ -53,11 +53,30 @@ function parseImagesUrls(imagesUrls, imageUrl) {
   } else if (typeof imagesUrls === 'string') {
     list = normalizeImagesUrls(imagesUrls);
   }
-  const main = parseImageUrl(imageUrl);
-  if (main && !list.includes(main)) {
-    list.unshift(main);
+
+  // Check for duplicates in the provided gallery
+  const uniqueList = [...new Set(list)];
+  if (uniqueList.length !== list.length) {
+    throw createHttpError(400, 'La galerie contient des images dupliquées. Chaque image doit être unique.');
   }
-  return list.length ? list.slice(0, 8) : [];
+
+  const main = parseImageUrl(imageUrl);
+  if (main) {
+    // If main image is already in gallery (but not at index 0), it's a duplicate entry
+    const existingIndex = list.indexOf(main);
+    if (existingIndex > 0) {
+      throw createHttpError(400, 'L’image principale est déjà présente dans la galerie. Évitez les doublons.');
+    }
+    if (existingIndex === -1) {
+      list.unshift(main);
+    }
+  }
+
+  if (list.length > 8) {
+    throw createHttpError(400, 'Un article ne peut pas avoir plus de 8 photos au total.');
+  }
+
+  return list;
 }
 
 function mapPlatToProduct(p, enterpriseId) {
@@ -225,7 +244,11 @@ async function insertArticleRow(db, row) {
     const { data, error } = await db.from('articles').insert(payload).select('*').single();
     if (!error) return data;
     const missing = OPTIONAL_ARTICLE_COLUMNS.find((col) => !removed.has(col) && col in payload && isMissingColumnError(error, col));
-    if (!missing) throw error;
+    if (!missing) {
+      console.error('[DB Error] Insert article failed:', error);
+      throw error;
+    }
+    console.warn(`[DB Warning] Column "${missing}" missing in table "articles", dropping from payload for this attempt.`);
     delete payload[missing];
     removed.add(missing);
   }
@@ -239,7 +262,11 @@ async function insertPlatRow(db, row) {
     const { data, error } = await db.from('plats').insert(payload).select('*').single();
     if (!error) return data;
     const missing = OPTIONAL_PLAT_COLUMNS.find((col) => !removed.has(col) && col in payload && isMissingColumnError(error, col));
-    if (!missing) throw error;
+    if (!missing) {
+      console.error('[DB Error] Insert plat failed:', error);
+      throw error;
+    }
+    console.warn(`[DB Warning] Column "${missing}" missing in table "plats", dropping from payload for this attempt.`);
     delete payload[missing];
     removed.add(missing);
   }
@@ -253,7 +280,11 @@ async function updatePlatRow(db, productId, patch) {
     const { data, error } = await db.from('plats').update(payload).eq('id', productId).select('*').single();
     if (!error) return data;
     const missing = OPTIONAL_PLAT_COLUMNS.find((col) => !removed.has(col) && col in payload && isMissingColumnError(error, col));
-    if (!missing) throw error;
+    if (!missing) {
+      console.error('[DB Error] Update plat failed:', error);
+      throw error;
+    }
+    console.warn(`[DB Warning] Column "${missing}" missing in table "plats", dropping from payload for this attempt.`);
     delete payload[missing];
     removed.add(missing);
   }
@@ -267,7 +298,11 @@ async function updateArticleRow(db, productId, patch) {
     const { data, error } = await db.from('articles').update(payload).eq('id', productId).select('*').single();
     if (!error) return data;
     const missing = OPTIONAL_ARTICLE_COLUMNS.find((col) => !removed.has(col) && col in payload && isMissingColumnError(error, col));
-    if (!missing) throw error;
+    if (!missing) {
+      console.error('[DB Error] Update article failed:', error);
+      throw error;
+    }
+    console.warn(`[DB Warning] Column "${missing}" missing in table "articles", dropping from payload for this attempt.`);
     delete payload[missing];
     removed.add(missing);
   }
