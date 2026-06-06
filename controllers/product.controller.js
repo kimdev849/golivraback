@@ -25,27 +25,39 @@ function normalizeImagesUrls(raw) {
   if (typeof raw === 'string') {
     const s = raw.trim();
     if (!s) return [];
-    // Format JSON standard
     if (s.startsWith('[') && s.endsWith(']')) {
       try {
         const parsed = JSON.parse(s);
         if (Array.isArray(parsed)) {
           return parsed.map((u) => String(u).trim()).filter((u) => u.startsWith('http'));
         }
-      } catch {
-        /* ignore */
-      }
+      } catch { /* ignore */ }
     }
-    // Format PostgreSQL array standard : {url1,url2}
     if (s.startsWith('{') && s.endsWith('}')) {
-      return s
-        .slice(1, -1)
-        .split(',')
-        .map((u) => u.replace(/^"(.*)"$/, '$1').trim())
-        .filter((u) => u.startsWith('http'));
+      return s.slice(1, -1).split(',').map((u) => u.replace(/^"(.*)"$/, '$1').trim()).filter((u) => u.startsWith('http'));
     }
   }
   return [];
+}
+
+function parseImageUrl(url) {
+  if (!url) return null;
+  const s = String(url).trim();
+  return s.startsWith('http') ? s : null;
+}
+
+function parseImagesUrls(imagesUrls, imageUrl) {
+  let list = [];
+  if (Array.isArray(imagesUrls)) {
+    list = imagesUrls.map((u) => String(u).trim()).filter((u) => u.startsWith('http'));
+  } else if (typeof imagesUrls === 'string') {
+    list = normalizeImagesUrls(imagesUrls);
+  }
+  const main = parseImageUrl(imageUrl);
+  if (main && !list.includes(main)) {
+    list.unshift(main);
+  }
+  return list.length ? list.slice(0, 8) : [];
 }
 
 function mapPlatToProduct(p, enterpriseId) {
@@ -116,73 +128,25 @@ function mapArticleToProduct(a, enterpriseId) {
 
 function parseTags(tags) {
   if (!tags) return null;
-  if (Array.isArray(tags)) {
-    return tags.map((t) => String(t).trim()).filter(Boolean);
-  }
+  if (Array.isArray(tags)) return tags.map((t) => String(t).trim()).filter(Boolean);
   return null;
 }
 
 function parseAllergenes(allergenes) {
   if (!allergenes) return null;
-  if (Array.isArray(allergenes)) {
-    return allergenes.map((a) => String(a).trim().toLowerCase()).filter(Boolean);
-  }
+  if (Array.isArray(allergenes)) return allergenes.map((a) => String(a).trim().toLowerCase()).filter(Boolean);
   return null;
 }
 
 function normalizeOptionGroups(options) {
   if (options === undefined || options === null) return null;
-  if (!Array.isArray(options)) {
-    throw createHttpError(400, 'Le champ options doit être un tableau JSON.');
-  }
-  const cleaned = options
-    .map((g) => ({
-      nom: String(g?.nom ?? '').trim(),
-      requis: g?.requis !== false,
-      choix: Array.isArray(g?.choix)
-        ? g.choix
-            .map((c) => ({
-              label: String(c?.label ?? '').trim(),
-              prix_sup: Number(c?.prix_sup) || 0,
-            }))
-            .filter((c) => c.label)
-        : [],
-    }))
-    .filter((g) => g.nom && g.choix.length);
+  if (!Array.isArray(options)) throw createHttpError(400, 'Le champ options doit être un tableau JSON.');
+  const cleaned = options.map((g) => ({
+    nom: String(g?.nom ?? '').trim(),
+    requis: g?.requis !== false,
+    choix: Array.isArray(g?.choix) ? g.choix.map((c) => ({ label: String(c?.label ?? '').trim(), prix_sup: Number(c?.prix_sup) || 0 })).filter((c) => c.label) : [],
+  })).filter((g) => g.nom && g.choix.length);
   return cleaned.length ? cleaned : null;
-}
-
-function applyPlatCatalogFields(target, body) {
-  const { tags, allergenes, promoDebutAt, promoFinAt, estDisponible, imagesUrls, imageUrl } = body;
-
-  const tagList = parseTags(tags);
-  if (tagList) target.tags = tagList;
-
-  const allergeneList = parseAllergenes(allergenes);
-  if (allergeneList) target.allergenes = allergeneList;
-
-  const promoStart = parseIsoDate(promoDebutAt);
-  const promoEnd = parseIsoDate(promoFinAt);
-  if (promoDebutAt !== undefined) target.promo_debut_at = promoStart;
-  if (promoFinAt !== undefined) target.promo_fin_at = promoEnd;
-  if (estDisponible !== undefined) target.est_disponible = Boolean(estDisponible);
-
-  if (imagesUrls !== undefined || imageUrl !== undefined) {
-    const gallery = parseImagesUrls(imagesUrls, imageUrl);
-    if (gallery) {
-      target.images_urls = gallery;
-      if (!target.image_url && gallery[0]) target.image_url = gallery[0];
-    }
-  }
-}
-
-function parseImagesUrls(imagesUrls, imageUrl) {
-  const list = Array.isArray(imagesUrls)
-    ? imagesUrls.map((u) => String(u).trim()).filter((u) => u.startsWith('http'))
-    : [];
-  const main = parseImageUrl(imageUrl);
-  if (main && !list.includes(main)) list.unshift(main);
-  return list.length ? list.slice(0, 8) : null;
 }
 
 function parseIsoDate(value) {
@@ -205,35 +169,35 @@ function normalizeDimensions(dimensions) {
   return Object.keys(out).length ? out : null;
 }
 
-function applyArticleCatalogFields(target, body) {
-  const {
-    tags,
-    imagesUrls,
-    imageUrl,
-    promoDebutAt,
-    promoFinAt,
-    typeProduit,
-    etatProduit,
-    marque,
-    poidsKg,
-    dimensions,
-    estDisponible,
-  } = body;
-
+function applyPlatCatalogFields(target, body) {
+  const { tags, allergenes, promoDebutAt, promoFinAt, estDisponible, imagesUrls, imageUrl } = body;
   const tagList = parseTags(tags);
   if (tagList) target.tags = tagList;
-
-  const gallery = parseImagesUrls(imagesUrls, imageUrl);
-  if (gallery) {
-    target.images_urls = gallery;
-    if (!target.image_url && gallery[0]) target.image_url = gallery[0];
-  }
-
+  const allergeneList = parseAllergenes(allergenes);
+  if (allergeneList) target.allergenes = allergeneList;
   const promoStart = parseIsoDate(promoDebutAt);
   const promoEnd = parseIsoDate(promoFinAt);
   if (promoDebutAt !== undefined) target.promo_debut_at = promoStart;
   if (promoFinAt !== undefined) target.promo_fin_at = promoEnd;
+  if (estDisponible !== undefined) target.est_disponible = Boolean(estDisponible);
+  if (imagesUrls !== undefined || imageUrl !== undefined) {
+    const gallery = parseImagesUrls(imagesUrls, imageUrl);
+    target.images_urls = gallery;
+    if (gallery && gallery[0]) target.image_url = gallery[0];
+  }
+}
 
+function applyArticleCatalogFields(target, body) {
+  const { tags, imagesUrls, imageUrl, promoDebutAt, promoFinAt, typeProduit, etatProduit, marque, poidsKg, dimensions, estDisponible } = body;
+  const tagList = parseTags(tags);
+  if (tagList) target.tags = tagList;
+  const gallery = parseImagesUrls(imagesUrls, imageUrl);
+  target.images_urls = gallery;
+  if (gallery && gallery[0]) target.image_url = gallery[0];
+  const promoStart = parseIsoDate(promoDebutAt);
+  const promoEnd = parseIsoDate(promoFinAt);
+  if (promoDebutAt !== undefined) target.promo_debut_at = promoStart;
+  if (promoFinAt !== undefined) target.promo_fin_at = promoEnd;
   if (typeProduit !== undefined && typeProduit) target.type_produit = String(typeProduit).trim();
   if (etatProduit !== undefined && etatProduit) target.etat_produit = String(etatProduit).trim();
   if (marque !== undefined && marque) target.marque = String(marque).trim();
@@ -246,18 +210,7 @@ function applyArticleCatalogFields(target, body) {
   if (estDisponible !== undefined) target.est_disponible = Boolean(estDisponible);
 }
 
-const OPTIONAL_ARTICLE_COLUMNS = [
-  'dimensions',
-  'images_urls',
-  'type_produit',
-  'etat_produit',
-  'marque',
-  'poids_kg',
-  'tags',
-  'promo_debut_at',
-  'promo_fin_at',
-];
-
+const OPTIONAL_ARTICLE_COLUMNS = ['dimensions', 'images_urls', 'type_produit', 'etat_produit', 'marque', 'poids_kg', 'tags', 'promo_debut_at', 'promo_fin_at'];
 const OPTIONAL_PLAT_COLUMNS = ['images_urls', 'tags', 'allergenes', 'promo_debut_at', 'promo_fin_at'];
 
 function isMissingColumnError(error, column) {
@@ -265,100 +218,66 @@ function isMissingColumnError(error, column) {
   return msg.includes(column) && (msg.includes('column') || msg.includes('colonne') || msg.includes('schema'));
 }
 
-async function insertArticleRow(db, row, opts = {}) {
+async function insertArticleRow(db, row) {
   const payload = { ...row };
   const removed = new Set();
-  const hadGallery =
-    opts.expectGallery === true ||
-    (Array.isArray(payload.images_urls) && payload.images_urls.length > 1);
-
   for (let attempt = 0; attempt <= OPTIONAL_ARTICLE_COLUMNS.length; attempt += 1) {
     const { data, error } = await db.from('articles').insert(payload).select('*').single();
-    if (!error) {
-      if (hadGallery && removed.has('images_urls')) {
-        throw createHttpError(
-          503,
-          'Galerie photo indisponible : appliquez la migration SQL images_urls sur Supabase.',
-        );
-      }
-      return data;
-    }
-
+    if (!error) return data;
     const missing = OPTIONAL_ARTICLE_COLUMNS.find((col) => !removed.has(col) && col in payload && isMissingColumnError(error, col));
     if (!missing) throw error;
     delete payload[missing];
     removed.add(missing);
   }
-
   throw createHttpError(500, 'Impossible d’enregistrer l’article.');
 }
 
-async function insertPlatRow(db, row, opts = {}) {
+async function insertPlatRow(db, row) {
   const payload = { ...row };
   const removed = new Set();
-  const hadGallery =
-    opts.expectGallery === true ||
-    (Array.isArray(payload.images_urls) && payload.images_urls.length > 1);
-
   for (let attempt = 0; attempt <= OPTIONAL_PLAT_COLUMNS.length; attempt += 1) {
     const { data, error } = await db.from('plats').insert(payload).select('*').single();
-    if (!error) {
-      if (hadGallery && removed.has('images_urls')) {
-        throw createHttpError(
-          503,
-          'Galerie photo indisponible : appliquez la migration SQL images_urls sur Supabase.',
-        );
-      }
-      return data;
-    }
-
+    if (!error) return data;
     const missing = OPTIONAL_PLAT_COLUMNS.find((col) => !removed.has(col) && col in payload && isMissingColumnError(error, col));
     if (!missing) throw error;
     delete payload[missing];
     removed.add(missing);
   }
-
   throw createHttpError(500, 'Impossible d’enregistrer le plat.');
+}
+
+async function updatePlatRow(db, productId, patch) {
+  const payload = { ...patch };
+  const removed = new Set();
+  for (let attempt = 0; attempt <= OPTIONAL_PLAT_COLUMNS.length; attempt += 1) {
+    const { data, error } = await db.from('plats').update(payload).eq('id', productId).select('*').single();
+    if (!error) return data;
+    const missing = OPTIONAL_PLAT_COLUMNS.find((col) => !removed.has(col) && col in payload && isMissingColumnError(error, col));
+    if (!missing) throw error;
+    delete payload[missing];
+    removed.add(missing);
+  }
+  throw createHttpError(500, 'Impossible de mettre à jour le plat.');
 }
 
 async function updateArticleRow(db, productId, patch) {
   const payload = { ...patch };
   const removed = new Set();
-
   for (let attempt = 0; attempt <= OPTIONAL_ARTICLE_COLUMNS.length; attempt += 1) {
     const { data, error } = await db.from('articles').update(payload).eq('id', productId).select('*').single();
     if (!error) return data;
-
     const missing = OPTIONAL_ARTICLE_COLUMNS.find((col) => !removed.has(col) && col in payload && isMissingColumnError(error, col));
     if (!missing) throw error;
     delete payload[missing];
     removed.add(missing);
   }
-
   throw createHttpError(500, 'Impossible de mettre à jour l’article.');
 }
 
-function parseImageUrl(imageUrl) {
-  return typeof imageUrl === 'string' && imageUrl.trim().startsWith('http') ? imageUrl.trim() : null;
-}
-
 async function findProductInEstablishment(db, kind, enterpriseId, productId) {
-  if (kind === 'restaurant') {
-    const { data, error } = await db
-      .from('plats')
-      .select('*')
-      .eq('id', productId)
-      .eq('restaurant_id', enterpriseId)
-      .maybeSingle();
-    if (error) throw error;
-    return data;
-  }
-  const { data, error } = await db
-    .from('articles')
-    .select('*')
-    .eq('id', productId)
-    .eq('boutique_id', enterpriseId)
-    .maybeSingle();
+  const table = kind === 'restaurant' ? 'plats' : 'articles';
+  const fk = kind === 'restaurant' ? 'restaurant_id' : 'boutique_id';
+  const { data, error } = await db.from(table).select('*').eq('id', productId).eq(fk, enterpriseId).maybeSingle();
   if (error) throw error;
   return data;
 }
@@ -367,41 +286,22 @@ async function listProducts(req, res, next) {
   try {
     const { enterpriseId } = req.params;
     const db = getDb();
-
     const resolved = await resolveEstablishment(db, enterpriseId);
     if (!resolved) throw createHttpError(404, 'Établissement introuvable');
-
     const { kind, row } = resolved;
     const visible = row.statut === ACTIVE;
-    if (!visible && !canManageEstablishment(req, row)) {
-      throw createHttpError(404, 'Établissement introuvable');
-    }
-
+    if (!visible && !canManageEstablishment(req, row)) throw createHttpError(404, 'Établissement introuvable');
     if (kind === 'restaurant') {
-      const { data, error } = await db
-        .from('plats')
-        .select('*')
-        .eq('restaurant_id', enterpriseId)
-        .order('nom');
+      const { data, error } = await db.from('plats').select('*').eq('restaurant_id', enterpriseId).order('nom');
       if (error) throw error;
       return res.json((data || []).map((p) => mapPlatToProduct(p, enterpriseId)));
     }
-
-    const { data, error } = await db
-      .from('articles')
-      .select('*')
-      .eq('boutique_id', enterpriseId)
-      .order('nom');
+    const { data, error } = await db.from('articles').select('*').eq('boutique_id', enterpriseId).order('nom');
     if (error) throw error;
     return res.json((data || []).map((a) => mapArticleToProduct(a, enterpriseId)));
-  } catch (error) {
-    return next(error);
-  }
+  } catch (error) { return next(error); }
 }
 
-/**
- * Feed public sans jointure PostgREST (évite SCHEMA_INCOMPLET si le cache FK n'est pas rechargé).
- */
 async function listProductFeed(req, res, next) {
   try {
     const db = getDb();
@@ -409,22 +309,14 @@ async function listProductFeed(req, res, next) {
     const onlyPromo = String(req.query.promo || '').toLowerCase() === 'true';
     const limit = Math.max(1, Math.min(100, Number(req.query.limit) || 30));
     const offset = Math.max(0, Number(req.query.offset) || 0);
-
     const includePlats = !type || type === 'plat' || type === 'all';
     const includeArticles = !type || type === 'article' || type === 'all';
-
     const out = [];
-
     if (includePlats) {
-      const { data: restaurants, error: restErr } = await db
-        .from('restaurants')
-        .select('id, nom, image_url')
-        .eq('statut', ACTIVE);
+      const { data: restaurants, error: restErr } = await db.from('restaurants').select('id, nom, image_url').eq('statut', ACTIVE);
       if (restErr) throw restErr;
-
       const restById = new Map((restaurants || []).map((r) => [r.id, r]));
       const restIds = [...restById.keys()];
-
       if (restIds.length) {
         let q = db.from('plats').select('*').in('restaurant_id', restIds).order('nom');
         if (onlyPromo) q = q.not('prix_promo', 'is', null);
@@ -433,27 +325,15 @@ async function listProductFeed(req, res, next) {
         for (const p of data || []) {
           const rest = restById.get(p.restaurant_id);
           if (!rest) continue;
-          out.push({
-            ...mapPlatToProduct(p, p.restaurant_id),
-            enterprise_id: p.restaurant_id,
-            enterprise_nom: rest.nom || null,
-            enterprise_type: 'restaurant',
-            enterprise_image_url: rest.image_url || null,
-          });
+          out.push({ ...mapPlatToProduct(p, p.restaurant_id), enterprise_id: p.restaurant_id, enterprise_nom: rest.nom || null, enterprise_type: 'restaurant', enterprise_image_url: rest.image_url || null });
         }
       }
     }
-
     if (includeArticles) {
-      const { data: boutiques, error: boutErr } = await db
-        .from('boutiques')
-        .select('id, nom, image_url')
-        .eq('statut', ACTIVE);
+      const { data: boutiques, error: boutErr } = await db.from('boutiques').select('id, nom, image_url').eq('statut', ACTIVE);
       if (boutErr) throw boutErr;
-
       const boutById = new Map((boutiques || []).map((b) => [b.id, b]));
       const boutIds = [...boutById.keys()];
-
       if (boutIds.length) {
         let q = db.from('articles').select('*').in('boutique_id', boutIds).order('nom');
         if (onlyPromo) q = q.not('prix_promo', 'is', null);
@@ -462,443 +342,179 @@ async function listProductFeed(req, res, next) {
         for (const a of data || []) {
           const bou = boutById.get(a.boutique_id);
           if (!bou) continue;
-          out.push({
-            ...mapArticleToProduct(a, a.boutique_id),
-            enterprise_id: a.boutique_id,
-            enterprise_nom: bou.nom || null,
-            enterprise_type: 'boutique',
-            enterprise_image_url: bou.image_url || null,
-          });
+          out.push({ ...mapArticleToProduct(a, a.boutique_id), enterprise_id: a.boutique_id, enterprise_nom: bou.nom || null, enterprise_type: 'boutique', enterprise_image_url: bou.image_url || null });
         }
       }
     }
-
     for (let i = out.length - 1; i > 0; i -= 1) {
       const j = Math.floor(Math.random() * (i + 1));
       [out[i], out[j]] = [out[j], out[i]];
     }
-
     return res.json(out.slice(offset, offset + limit));
-  } catch (error) {
-    return next(error);
-  }
+  } catch (error) { return next(error); }
 }
 
-/**
- * Recherche unifiée produits + commerces (serveur).
- * Query: q (min 2 car.), type (plat|article|restaurant|boutique|all), limit (max 50).
- */
 async function searchCatalog(req, res, next) {
   try {
     const db = getDb();
     const q = String(req.query.q || '').trim();
     const type = typeof req.query.type === 'string' ? req.query.type.toLowerCase() : 'all';
     const limit = Math.max(1, Math.min(50, Number(req.query.limit) || 24));
-
-    if (q.length < 2) {
-      return res.json({ products: [], enterprises: [] });
-    }
-
+    if (q.length < 2) return res.json({ products: [], enterprises: [] });
     const pattern = `%${q.replace(/[%_\\]/g, '')}%`;
     const enterprises = [];
     const products = [];
-
     const includeRestaurants = type === 'all' || type === 'restaurant';
     const includeBoutiques = type === 'all' || type === 'boutique';
     const includePlats = type === 'all' || type === 'plat';
     const includeArticles = type === 'all' || type === 'article';
-
     if (includeRestaurants) {
-      const { data, error } = await db
-        .from('restaurants')
-        .select('id, nom, description, adresse, image_url, type, categorie_id')
-        .eq('statut', ACTIVE)
-        .or(`nom.ilike.${pattern},description.ilike.${pattern},adresse.ilike.${pattern}`)
-        .limit(Math.min(limit, 12));
+      const { data, error } = await db.from('restaurants').select('id, nom, description, adresse, image_url, type, categorie_id').eq('statut', ACTIVE).or(`nom.ilike.${pattern},description.ilike.${pattern},adresse.ilike.${pattern}`).limit(Math.min(limit, 12));
       if (error) throw error;
-      for (const r of data || []) {
-        enterprises.push({
-          id: r.id,
-          nom: r.nom,
-          type: 'restaurant',
-          description: r.description ?? null,
-          adresse: r.adresse ?? null,
-          image_url: r.image_url ?? null,
-          categorie_id: r.categorie_id ?? null,
-        });
-      }
+      for (const r of data || []) enterprises.push({ id: r.id, nom: r.nom, type: 'restaurant', description: r.description ?? null, adresse: r.adresse ?? null, image_url: r.image_url ?? null, categorie_id: r.categorie_id ?? null });
     }
-
     if (includeBoutiques) {
-      const { data, error } = await db
-        .from('boutiques')
-        .select('id, nom, description, adresse, image_url, type, categorie_id')
-        .eq('statut', ACTIVE)
-        .or(`nom.ilike.${pattern},description.ilike.${pattern},adresse.ilike.${pattern}`)
-        .limit(Math.min(limit, 12));
+      const { data, error } = await db.from('boutiques').select('id, nom, description, adresse, image_url, type, categorie_id').eq('statut', ACTIVE).or(`nom.ilike.${pattern},description.ilike.${pattern},adresse.ilike.${pattern}`).limit(Math.min(limit, 12));
       if (error) throw error;
-      for (const b of data || []) {
-        enterprises.push({
-          id: b.id,
-          nom: b.nom,
-          type: 'boutique',
-          description: b.description ?? null,
-          adresse: b.adresse ?? null,
-          image_url: b.image_url ?? null,
-          categorie_id: b.categorie_id ?? null,
-        });
-      }
+      for (const b of data || []) enterprises.push({ id: b.id, nom: b.nom, type: 'boutique', description: b.description ?? null, adresse: b.adresse ?? null, image_url: b.image_url ?? null, categorie_id: b.categorie_id ?? null });
     }
-
     if (includePlats) {
-      const { data: restaurants, error: restErr } = await db
-        .from('restaurants')
-        .select('id, nom, image_url')
-        .eq('statut', ACTIVE);
+      const { data: restaurants, error: restErr } = await db.from('restaurants').select('id, nom, image_url').eq('statut', ACTIVE);
       if (restErr) throw restErr;
       const restById = new Map((restaurants || []).map((r) => [r.id, r]));
       const restIds = [...restById.keys()];
       if (restIds.length) {
-        const { data, error } = await db
-          .from('plats')
-          .select('*')
-          .in('restaurant_id', restIds)
-          .or(`nom.ilike.${pattern},description.ilike.${pattern}`)
-          .limit(limit);
+        const { data, error } = await db.from('plats').select('*').in('restaurant_id', restIds).or(`nom.ilike.${pattern},description.ilike.${pattern}`).limit(limit);
         if (error) throw error;
         for (const p of data || []) {
           const rest = restById.get(p.restaurant_id);
           if (!rest) continue;
-          products.push({
-            ...mapPlatToProduct(p, p.restaurant_id),
-            enterprise_id: p.restaurant_id,
-            enterprise_nom: rest.nom || null,
-            enterprise_type: 'restaurant',
-            enterprise_image_url: rest.image_url || null,
-          });
+          products.push({ ...mapPlatToProduct(p, p.restaurant_id), enterprise_id: p.restaurant_id, enterprise_nom: rest.nom || null, enterprise_type: 'restaurant', enterprise_image_url: rest.image_url || null });
         }
       }
     }
-
     if (includeArticles) {
-      const { data: boutiques, error: boutErr } = await db
-        .from('boutiques')
-        .select('id, nom, image_url')
-        .eq('statut', ACTIVE);
+      const { data: boutiques, error: boutErr } = await db.from('boutiques').select('id, nom, image_url').eq('statut', ACTIVE);
       if (boutErr) throw boutErr;
       const boutById = new Map((boutiques || []).map((b) => [b.id, b]));
       const boutIds = [...boutById.keys()];
       if (boutIds.length) {
-        const { data, error } = await db
-          .from('articles')
-          .select('*')
-          .in('boutique_id', boutIds)
-          .or(`nom.ilike.${pattern},description.ilike.${pattern}`)
-          .limit(limit);
+        const { data, error } = await db.from('articles').select('*').in('boutique_id', boutIds).or(`nom.ilike.${pattern},description.ilike.${pattern}`).limit(limit);
         if (error) throw error;
         for (const a of data || []) {
           const bou = boutById.get(a.boutique_id);
           if (!bou) continue;
-          products.push({
-            ...mapArticleToProduct(a, a.boutique_id),
-            enterprise_id: a.boutique_id,
-            enterprise_nom: bou.nom || null,
-            enterprise_type: 'boutique',
-            enterprise_image_url: bou.image_url || null,
-          });
+          products.push({ ...mapArticleToProduct(a, a.boutique_id), enterprise_id: a.boutique_id, enterprise_nom: bou.nom || null, enterprise_type: 'boutique', enterprise_image_url: bou.image_url || null });
         }
       }
     }
-
-    return res.json({
-      products: products.slice(0, limit),
-      enterprises: enterprises.slice(0, Math.min(limit, 12)),
-    });
-  } catch (error) {
-    return next(error);
-  }
+    return res.json({ products: products.slice(0, limit), enterprises: enterprises.slice(0, Math.min(limit, 12)) });
+  } catch (error) { return next(error); }
 }
 
 async function createProduct(req, res, next) {
   try {
     const { enterpriseId } = req.params;
-    const {
-      description,
-      prixPromo,
-      stock,
-      stockIllimite,
-      imageUrl,
-      imagesUrls,
-      categorieId,
-      estEnVedette,
-      estDisponible,
-      reference,
-      unite,
-      options,
-      tags,
-      promoDebutAt,
-      promoFinAt,
-      allergenes,
-      typeProduit,
-      etatProduit,
-      marque,
-      poidsKg,
-      dimensions,
-    } = req.body;
+    const { description, prixPromo, stock, stockIllimite, imageUrl, imagesUrls, categorieId, estEnVedette, estDisponible, reference, unite, options, tags, promoDebutAt, promoFinAt, allergenes, typeProduit, etatProduit, marque, poidsKg, dimensions } = req.body;
     requireFields(req.body, ['nom', 'prix']);
-
     const validators = require('../lib/validators');
     const nomClean = validators.requireValid(req.body.nom, validators.validateProductName, 'nom');
     const prixClean = validators.requireValid(req.body.prix, validators.validatePrice, 'prix');
-    const descriptionClean = description
-      ? validators.requireValid(description, (v) => validators.validateDescription(v, 500), 'description')
-      : null;
-    if (prixPromo != null && prixPromo !== '') {
-      validators.requireValid(prixPromo, validators.validatePrice, 'prixPromo');
-    }
-    validators.requireValidPromo({
-      prixNormal: prixClean,
-      prixPromo,
-      promoDebutAt,
-      promoFinAt,
-    });
-    if (stock !== undefined && stock !== null && stock !== '' && !stockIllimite) {
-      validators.requireValid(stock, validators.validateStock, 'stock');
-    }
-
-    const { assertListingContent } = require('../lib/content-policy');
-    assertListingContent(req.body);
-
+    const descriptionClean = description ? validators.requireValid(description, (v) => validators.validateDescription(v, 500), 'description') : null;
+    if (prixPromo != null && prixPromo !== '') validators.requireValid(prixPromo, validators.validatePrice, 'prixPromo');
+    validators.requireValidPromo({ prixNormal: prixClean, prixPromo, promoDebutAt, promoFinAt });
+    if (stock !== undefined && stock !== null && stock !== '' && !stockIllimite) validators.requireValid(stock, validators.validateStock, 'stock');
+    require('../lib/content-policy').assertListingContent(req.body);
     const imgUrl = parseImageUrl(imageUrl);
     const normalizedOptions = options !== undefined ? normalizeOptionGroups(options) : undefined;
-
     const db = getDb();
     const resolved = await resolveEstablishment(db, enterpriseId);
     if (!resolved) throw createHttpError(404, 'Établissement introuvable');
-
     const { kind, row } = resolved;
     if (!canManageEstablishment(req, row)) throw createHttpError(403, 'Action non autorisée pour cet établissement');
-
     if (kind === 'restaurant') {
-      if (req.auth.role !== 'admin' && req.auth.role !== 'restaurateur') {
-        throw createHttpError(403, 'Seul un restaurateur peut ajouter des plats.');
-      }
-      const prixNum = Number(prixClean);
-      const insertPlat = {
-        restaurant_id: enterpriseId,
-        nom: nomClean,
-        description: descriptionClean,
-        prix: prixNum,
-        est_disponible: estDisponible !== undefined ? Boolean(estDisponible) : true,
-        image_url: imgUrl,
-        est_en_vedette: Boolean(estEnVedette),
-        options: normalizedOptions !== undefined ? normalizedOptions : options ?? null,
-      };
+      if (req.auth.role !== 'admin' && req.auth.role !== 'restaurateur') throw createHttpError(403, 'Seul un restaurateur peut ajouter des plats.');
+      const insertPlat = { restaurant_id: enterpriseId, nom: nomClean, description: descriptionClean, prix: Number(prixClean), est_disponible: estDisponible !== undefined ? Boolean(estDisponible) : true, image_url: imgUrl, est_en_vedette: Boolean(estEnVedette), options: normalizedOptions !== undefined ? normalizedOptions : options ?? null };
       if (categorieId) insertPlat.categorie_id = categorieId;
       if (prixPromo != null && prixPromo !== '') insertPlat.prix_promo = Number(prixPromo);
-      applyPlatCatalogFields(insertPlat, {
-        tags,
-        allergenes,
-        promoDebutAt,
-        promoFinAt,
-        estDisponible,
-        imagesUrls,
-        imageUrl: imgUrl,
-      });
-      if (stockIllimite === true) {
-        insertPlat.stock = null;
-      } else if (stock !== undefined && stock !== null && stock !== '') {
-        insertPlat.stock = Math.max(0, Math.floor(Number(stock)));
-      }
-
-      const expectGallery = Array.isArray(imagesUrls) && imagesUrls.length > 1;
-      const data = await insertPlatRow(db, insertPlat, { expectGallery });
+      applyPlatCatalogFields(insertPlat, { tags, allergenes, promoDebutAt, promoFinAt, estDisponible, imagesUrls, imageUrl: imgUrl });
+      if (stockIllimite === true) insertPlat.stock = null;
+      else if (stock !== undefined && stock !== null && stock !== '') insertPlat.stock = Math.max(0, Math.floor(Number(stock)));
+      const data = await insertPlatRow(db, insertPlat);
       return res.status(201).json(mapPlatToProduct(data, enterpriseId));
     }
-
-    if (req.auth.role !== 'admin' && req.auth.role !== 'commercant') {
-      throw createHttpError(403, 'Seul un commerçant peut ajouter des articles.');
-    }
-    const prixNum = Number(prixClean);
-    const stockVal = stockIllimite
-      ? null
-      : stock === undefined || stock === null
-        ? null
-        : Math.max(0, Math.floor(Number(stock)));
-
-    const insertArt = {
-      boutique_id: enterpriseId,
-      nom: nomClean,
-      description: descriptionClean,
-      prix: prixNum,
-      stock: stockVal,
-      est_disponible: estDisponible !== undefined ? Boolean(estDisponible) : true,
-      image_url: imgUrl,
-      est_en_vedette: Boolean(estEnVedette),
-      options: normalizedOptions !== undefined ? normalizedOptions : options ?? null,
-    };
+    if (req.auth.role !== 'admin' && req.auth.role !== 'commercant') throw createHttpError(403, 'Seul un commerçant peut ajouter des articles.');
+    const insertArt = { boutique_id: enterpriseId, nom: nomClean, description: descriptionClean, prix: Number(prixClean), stock: stockIllimite ? null : (stock === undefined || stock === null ? null : Math.max(0, Math.floor(Number(stock)))), est_disponible: estDisponible !== undefined ? Boolean(estDisponible) : true, image_url: imgUrl, est_en_vedette: Boolean(estEnVedette), options: normalizedOptions !== undefined ? normalizedOptions : options ?? null };
     if (categorieId) insertArt.categorie_id = categorieId;
     if (prixPromo != null && prixPromo !== '') insertArt.prix_promo = Number(prixPromo);
-    const ref = reference ? String(reference).trim() : `GLV-${Date.now().toString(36).toUpperCase().slice(-6)}`;
-    insertArt.reference = ref;
+    insertArt.reference = reference ? String(reference).trim() : `GLV-${Date.now().toString(36).toUpperCase().slice(-6)}`;
     if (unite) insertArt.unite = String(unite).trim();
-    applyArticleCatalogFields(insertArt, {
-      tags,
-      imagesUrls,
-      imageUrl: imgUrl,
-      promoDebutAt,
-      promoFinAt,
-      typeProduit,
-      etatProduit,
-      marque,
-      poidsKg,
-      dimensions,
-    });
-
-    const expectGallery = Array.isArray(imagesUrls) && imagesUrls.length > 1;
-    const data = await insertArticleRow(db, insertArt, { expectGallery });
+    applyArticleCatalogFields(insertArt, { tags, imagesUrls, imageUrl: imgUrl, promoDebutAt, promoFinAt, typeProduit, etatProduit, marque, poidsKg, dimensions, estDisponible });
+    const data = await insertArticleRow(db, insertArt);
     return res.status(201).json(mapArticleToProduct(data, enterpriseId));
-  } catch (error) {
-    return next(error);
-  }
+  } catch (error) { return next(error); }
 }
 
 async function updateProduct(req, res, next) {
   try {
     const { enterpriseId, productId } = req.params;
-    const {
-      nom,
-      description,
-      prix,
-      prixPromo,
-      stock,
-      stockIllimite,
-      imageUrl,
-      imagesUrls,
-      estDisponible,
-      categorieId,
-      estEnVedette,
-      reference,
-      unite,
-      options,
-      tags,
-      promoDebutAt,
-      promoFinAt,
-      allergenes,
-      typeProduit,
-      etatProduit,
-      marque,
-      poidsKg,
-      dimensions,
-    } = req.body;
-
+    const { nom, description, prix, prixPromo, stock, stockIllimite, imageUrl, imagesUrls, estDisponible, categorieId, estEnVedette, reference, unite, options, tags, promoDebutAt, promoFinAt, allergenes, typeProduit, etatProduit, marque, poidsKg, dimensions } = req.body;
     const db = getDb();
     const resolved = await resolveEstablishment(db, enterpriseId);
     if (!resolved) throw createHttpError(404, 'Établissement introuvable');
-
     const { kind, row } = resolved;
     if (!canManageEstablishment(req, row)) throw createHttpError(403, 'Action non autorisée pour cet établissement');
-
     const existing = await findProductInEstablishment(db, kind, enterpriseId, productId);
     if (!existing) throw createHttpError(404, 'Produit introuvable');
-
     const validators = require('../lib/validators');
     if (nom !== undefined) validators.requireValid(nom, validators.validateProductName, 'nom');
-    if (description !== undefined && description !== null) {
-      validators.requireValid(description, (v) => validators.validateDescription(v, 500), 'description');
-    }
+    if (description !== undefined && description !== null) validators.requireValid(description, (v) => validators.validateDescription(v, 500), 'description');
     if (prix !== undefined) validators.requireValid(prix, validators.validatePrice, 'prix');
-    if (prixPromo !== undefined && prixPromo !== null) {
-      validators.requireValid(prixPromo, validators.validatePrice, 'prixPromo');
-    }
+    if (prixPromo !== undefined && prixPromo !== null) validators.requireValid(prixPromo, validators.validatePrice, 'prixPromo');
     if (prix !== undefined || prixPromo !== undefined || promoDebutAt !== undefined || promoFinAt !== undefined) {
-      validators.requireValidPromo({
-        prixNormal: prix !== undefined ? prix : (existing ? existing.prix : undefined),
-        prixPromo: prixPromo !== undefined ? prixPromo : (existing ? existing.prix_promo : null),
-        promoDebutAt: promoDebutAt !== undefined ? promoDebutAt : (existing ? existing.promo_debut_at : null),
-        promoFinAt: promoFinAt !== undefined ? promoFinAt : (existing ? existing.promo_fin_at : null),
-      });
+      validators.requireValidPromo({ prixNormal: prix !== undefined ? prix : existing.prix, prixPromo: prixPromo !== undefined ? prixPromo : existing.prix_promo, promoDebutAt: promoDebutAt !== undefined ? promoDebutAt : existing.promo_debut_at, promoFinAt: promoFinAt !== undefined ? promoFinAt : existing.promo_fin_at });
     }
-    if (stock !== undefined && stock !== null && stock !== '' && !stockIllimite) {
-      validators.requireValid(stock, validators.validateStock, 'stock');
-    }
-
-    const { assertListingContent } = require('../lib/content-policy');
-    assertListingContent(req.body);
-
+    if (stock !== undefined && stock !== null && stock !== '' && !stockIllimite) validators.requireValid(stock, validators.validateStock, 'stock');
+    require('../lib/content-policy').assertListingContent(req.body);
     if (kind === 'restaurant') {
-      if (req.auth.role !== 'admin' && req.auth.role !== 'restaurateur') {
-        throw createHttpError(403, 'Seul un restaurateur peut modifier des plats.');
-      }
+      if (req.auth.role !== 'admin' && req.auth.role !== 'restaurateur') throw createHttpError(403, 'Seul un restaurateur peut modifier des plats.');
       const patch = {};
-      if (nom !== undefined) patch.nom = validators.validateProductName(nom).ok ? validators.validateProductName(nom).value : String(nom).trim();
+      if (nom !== undefined) patch.nom = String(nom).trim();
       if (description !== undefined) patch.description = description || null;
-      if (prix !== undefined) patch.prix = Number(validators.validatePrice(prix).value);
+      if (prix !== undefined) patch.prix = Number(prix);
       if (imageUrl !== undefined) patch.image_url = parseImageUrl(imageUrl);
       if (estDisponible !== undefined) patch.est_disponible = Boolean(estDisponible);
       if (prixPromo !== undefined) patch.prix_promo = prixPromo === null ? null : Number(prixPromo);
       if (categorieId !== undefined) patch.categorie_id = categorieId || null;
       if (estEnVedette !== undefined) patch.est_en_vedette = Boolean(estEnVedette);
       if (options !== undefined) patch.options = normalizeOptionGroups(options);
-      applyPlatCatalogFields(patch, {
-        tags,
-        allergenes,
-        promoDebutAt,
-        promoFinAt,
-        estDisponible,
-        imagesUrls,
-        imageUrl: imageUrl !== undefined ? parseImageUrl(imageUrl) : existing.image_url,
-      });
-      if (stockIllimite === true) {
-        patch.stock = null;
-      } else if (stock !== undefined) {
-        patch.stock = stock === null || stock === '' ? null : Math.max(0, Math.floor(Number(stock)));
-      }
-
-      const { data, error } = await db.from('plats').update(patch).eq('id', productId).select('*').single();
-      if (error) throw error;
+      if (stockIllimite === true) patch.stock = null;
+      else if (stock !== undefined) patch.stock = stock === null || stock === '' ? null : Math.max(0, Math.floor(Number(stock)));
+      const imagesPatch = { imagesUrls: imagesUrls !== undefined ? imagesUrls : normalizeImagesUrls(existing.images_urls), imageUrl: imageUrl !== undefined ? parseImageUrl(imageUrl) : existing.image_url };
+      applyPlatCatalogFields(patch, { ...req.body, ...imagesPatch });
+      const data = await updatePlatRow(db, productId, patch);
       return res.json(mapPlatToProduct(data, enterpriseId));
     }
-
-    if (req.auth.role !== 'admin' && req.auth.role !== 'commercant') {
-      throw createHttpError(403, 'Seul un commerçant peut modifier des articles.');
-    }
+    if (req.auth.role !== 'admin' && req.auth.role !== 'commercant') throw createHttpError(403, 'Seul un commerçant peut modifier des articles.');
     const patch = {};
-    if (nom !== undefined) patch.nom = validators.validateProductName(nom).ok ? validators.validateProductName(nom).value : String(nom).trim();
+    if (nom !== undefined) patch.nom = String(nom).trim();
     if (description !== undefined) patch.description = description || null;
-    if (prix !== undefined) patch.prix = Number(validators.validatePrice(prix).value);
+    if (prix !== undefined) patch.prix = Number(prix);
     if (imageUrl !== undefined) patch.image_url = parseImageUrl(imageUrl);
     if (estDisponible !== undefined) patch.est_disponible = Boolean(estDisponible);
-    if (stockIllimite === true) {
-      patch.stock = null;
-    } else if (stock !== undefined) {
-      patch.stock = stock === null ? null : Math.max(0, Math.floor(Number(stock)));
-    }
+    if (stockIllimite === true) patch.stock = null;
+    else if (stock !== undefined) patch.stock = stock === null ? null : Math.max(0, Math.floor(Number(stock)));
     if (prixPromo !== undefined) patch.prix_promo = prixPromo === null ? null : Number(prixPromo);
     if (categorieId !== undefined) patch.categorie_id = categorieId || null;
     if (estEnVedette !== undefined) patch.est_en_vedette = Boolean(estEnVedette);
     if (reference !== undefined) patch.reference = reference || null;
     if (unite !== undefined) patch.unite = unite || null;
     if (options !== undefined) patch.options = normalizeOptionGroups(options);
-    applyArticleCatalogFields(patch, {
-      tags,
-      imagesUrls,
-      imageUrl: imageUrl !== undefined ? imageUrl : existing.image_url,
-      promoDebutAt,
-      promoFinAt,
-      typeProduit,
-      etatProduit,
-      marque,
-      poidsKg,
-      dimensions,
-      estDisponible,
-    });
-
+    const imagesPatch = { imagesUrls: imagesUrls !== undefined ? imagesUrls : normalizeImagesUrls(existing.images_urls), imageUrl: imageUrl !== undefined ? parseImageUrl(imageUrl) : existing.image_url };
+    applyArticleCatalogFields(patch, { ...req.body, ...imagesPatch });
     const data = await updateArticleRow(db, productId, patch);
     return res.json(mapArticleToProduct(data, enterpriseId));
-  } catch (error) {
-    return next(error);
-  }
+  } catch (error) { return next(error); }
 }
 
 async function deleteProduct(req, res, next) {
@@ -907,108 +523,56 @@ async function deleteProduct(req, res, next) {
     const db = getDb();
     const resolved = await resolveEstablishment(db, enterpriseId);
     if (!resolved) throw createHttpError(404, 'Établissement introuvable');
-
     const { kind, row } = resolved;
     if (!canManageEstablishment(req, row)) throw createHttpError(403, 'Action non autorisée pour cet établissement');
-
     const existing = await findProductInEstablishment(db, kind, enterpriseId, productId);
     if (!existing) throw createHttpError(404, 'Produit introuvable');
-
     const table = kind === 'restaurant' ? 'plats' : 'articles';
     const { error } = await db.from(table).delete().eq('id', productId);
     if (error) throw error;
     return res.status(204).send();
-  } catch (error) {
-    return next(error);
-  }
+  } catch (error) { return next(error); }
 }
 
-/**
- * Tracking d'engagement : vue d'un produit (ouverture de la fiche commerce).
- * Body optionnel `{ ids: [productId, ...] }` pour incrémenter plusieurs produits d'un coup
- * (cas listing : on incrémente tous les produits visibles à l'ouverture).
- * Sinon incrémente le produit identifié par :productId.
- */
 async function trackProductView(req, res, next) {
   try {
     const { enterpriseId, productId } = req.params;
     const { ids } = req.body || {};
     const db = getDb();
-
-    const resolved = await resolveEstablishment(db, enterpriseId);
-    if (!resolved) return res.status(204).send(); // non-bloquant
-    const { kind } = resolved;
-    const table = kind === 'restaurant' ? 'plats' : 'articles';
-    const fk = kind === 'restaurant' ? 'restaurant_id' : 'boutique_id';
-
-    let targetIds = [];
-    if (Array.isArray(ids) && ids.length) {
-      targetIds = ids
-        .filter((x) => typeof x === 'string' && x.length === 36)
-        .slice(0, 50);
-    } else if (productId) {
-      targetIds = [productId];
-    }
-    if (!targetIds.length) return res.status(204).send();
-
-    // RPC atomique si disponible, sinon update best-effort
-    await Promise.all(
-      targetIds.map(async (id) => {
-        try {
-          await db.rpc('increment_product_view', { p_table: table, p_id: id });
-        } catch {
-          // fallback non-atomique
-          const { data: cur } = await db.from(table).select('id, nb_vues').eq('id', id).eq(fk, enterpriseId).maybeSingle();
-          if (cur) {
-            await db.from(table).update({ nb_vues: Number(cur.nb_vues ?? 0) + 1 }).eq('id', id);
-          }
-        }
-      }),
-    );
-    return res.status(204).send();
-  } catch (error) {
-    // tracking ne doit jamais casser l'UX
-    console.warn('[trackProductView] failed:', error?.message || error);
-    return res.status(204).send();
-  }
-}
-
-/**
- * Tracking d'engagement : clic / ajout au panier d'un produit.
- */
-async function trackProductClick(req, res, next) {
-  try {
-    const { enterpriseId, productId } = req.params;
-    const db = getDb();
-
     const resolved = await resolveEstablishment(db, enterpriseId);
     if (!resolved) return res.status(204).send();
     const { kind } = resolved;
     const table = kind === 'restaurant' ? 'plats' : 'articles';
     const fk = kind === 'restaurant' ? 'restaurant_id' : 'boutique_id';
-
-    try {
-      await db.rpc('increment_product_click', { p_table: table, p_id: productId });
-    } catch {
-      const { data: cur } = await db.from(table).select('id, nb_clics').eq('id', productId).eq(fk, enterpriseId).maybeSingle();
-      if (cur) {
-        await db.from(table).update({ nb_clics: Number(cur.nb_clics ?? 0) + 1 }).eq('id', productId);
+    let targetIds = Array.isArray(ids) && ids.length ? ids.filter((x) => typeof x === 'string' && x.length === 36).slice(0, 50) : (productId ? [productId] : []);
+    if (!targetIds.length) return res.status(204).send();
+    await Promise.all(targetIds.map(async (id) => {
+      try { await db.rpc('increment_product_view', { p_table: table, p_id: id }); }
+      catch {
+        const { data: cur } = await db.from(table).select('id, nb_vues').eq('id', id).eq(fk, enterpriseId).maybeSingle();
+        if (cur) await db.from(table).update({ nb_vues: Number(cur.nb_vues ?? 0) + 1 }).eq('id', id);
       }
-    }
+    }));
     return res.status(204).send();
-  } catch (error) {
-    console.warn('[trackProductClick] failed:', error?.message || error);
-    return res.status(204).send();
-  }
+  } catch (error) { return res.status(204).send(); }
 }
 
-module.exports = {
-  listProducts,
-  listProductFeed,
-  searchCatalog,
-  createProduct,
-  updateProduct,
-  deleteProduct,
-  trackProductView,
-  trackProductClick,
-};
+async function trackProductClick(req, res, next) {
+  try {
+    const { enterpriseId, productId } = req.params;
+    const db = getDb();
+    const resolved = await resolveEstablishment(db, enterpriseId);
+    if (!resolved) return res.status(204).send();
+    const { kind } = resolved;
+    const table = kind === 'restaurant' ? 'plats' : 'articles';
+    const fk = kind === 'restaurant' ? 'restaurant_id' : 'boutique_id';
+    try { await db.rpc('increment_product_click', { p_table: table, p_id: productId }); }
+    catch {
+      const { data: cur } = await db.from(table).select('id, nb_clics').eq('id', productId).eq(fk, enterpriseId).maybeSingle();
+      if (cur) await db.from(table).update({ nb_clics: Number(cur.nb_clics ?? 0) + 1 }).eq('id', productId);
+    }
+    return res.status(204).send();
+  } catch (error) { return res.status(204).send(); }
+}
+
+module.exports = { listProducts, listProductFeed, searchCatalog, createProduct, updateProduct, deleteProduct, trackProductView, trackProductClick };

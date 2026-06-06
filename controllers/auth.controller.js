@@ -266,9 +266,10 @@ async function register(req, res, next) {
     let token;
     let expireDate;
     try {
-      const sessionResult = await insertSession(db, data.id, generateToken(), req);
+      const sessionToken = generateToken();
+      const sessionResult = await insertSession(db, data.id, sessionToken, req);
       if (sessionResult.sessionError) throw sessionResult.sessionError;
-      token = sessionResult.token;
+      token = sessionToken;
       expireDate = sessionResult.expireDate;
 
       await deleteOtpRow(db, otpRow.id);

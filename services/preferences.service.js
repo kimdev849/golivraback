@@ -1,7 +1,7 @@
 const DEFAULT_PREFERENCES = {
   notif_push_enabled: true,
   notif_email_enabled: true,
-  dark_mode: false,
+  dark_mode: null,
   langue: 'fr',
 };
 
@@ -10,7 +10,7 @@ function mergePreferences(raw) {
   if (!raw || typeof raw !== 'object') return base;
   if (typeof raw.notif_push_enabled === 'boolean') base.notif_push_enabled = raw.notif_push_enabled;
   if (typeof raw.notif_email_enabled === 'boolean') base.notif_email_enabled = raw.notif_email_enabled;
-  if (typeof raw.dark_mode === 'boolean') base.dark_mode = raw.dark_mode;
+  if (typeof raw.dark_mode === 'boolean' || raw.dark_mode === null) base.dark_mode = raw.dark_mode;
   if (typeof raw.langue === 'string' && raw.langue.length <= 10) base.langue = raw.langue;
   return base;
 }
