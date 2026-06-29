@@ -1,4 +1,6 @@
 const express = require('express');
+const locationAdmin = require('../controllers/admin-location.controller');
+
 const {
   getAdminStats,
   getAdminCharts,
@@ -77,5 +79,21 @@ router.get('/incidents/summary', ...adminOnly, getAdminIncidentsSummary);
 router.get('/incidents', ...adminOnly, listAdminIncidents);
 router.get('/incidents/:incidentId', ...adminOnly, getAdminIncidentDetail);
 router.patch('/incidents/:incidentId/resolve', ...adminOnly, patchResolveIncident);
+
+// ── Gestion des pays / villes / arrondissements ────────────────────────────
+router.get('/locations/pays', ...adminOnly, locationAdmin.getPaysList);
+router.post('/locations/pays', ...adminOnly, locationAdmin.postPays);
+router.patch('/locations/pays/:paysId', ...adminOnly, locationAdmin.patchPays);
+router.delete('/locations/pays/:paysId', ...adminOnly, locationAdmin.removePays);
+
+router.get('/locations/villes', ...adminOnly, locationAdmin.getVillesList);
+router.post('/locations/villes', ...adminOnly, locationAdmin.postVille);
+router.patch('/locations/villes/:villeId', ...adminOnly, locationAdmin.patchVille);
+router.delete('/locations/villes/:villeId', ...adminOnly, locationAdmin.removeVille);
+
+router.get('/locations/arrondissements', ...adminOnly, locationAdmin.getArrondissementsList);
+router.post('/locations/arrondissements', ...adminOnly, locationAdmin.postArrondissement);
+router.patch('/locations/arrondissements/:arrId', ...adminOnly, locationAdmin.patchArrondissement);
+router.delete('/locations/arrondissements/:arrId', ...adminOnly, locationAdmin.removeArrondissement);
 
 module.exports = router;

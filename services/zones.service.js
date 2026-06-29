@@ -29,6 +29,7 @@ function mapArrondissementRow(row) {
   return {
     id: row.id,
     name: row.name,
+    ville_id: row.ville_id ?? null,
     zone_id: row.zone_id ?? null,
     sort_order: Number(row.sort_order) || 0,
   };
@@ -51,7 +52,7 @@ async function listZones(db) {
 async function listArrondissements(db) {
   const { data, error } = await db
     .from('arrondissements')
-    .select('id, name, zone_id, sort_order')
+    .select('id, name, ville_id, zone_id, sort_order')
     .order('sort_order', { ascending: true });
   if (error) throw error;
   return (data || []).map(mapArrondissementRow);
@@ -149,8 +150,41 @@ async function resolveDeliveryPriceForQuartier(db, quartierName) {
 }
 
 async function getAdminZonesBoard(db) {
-  const [zones, arrondissements] = await Promise.all([listZones(db), listArrondissements(db)]);
-  return { zones, arrondissements };
+  const [zones, arrondissements, paysData] = await Promise.all([
+    listZones(db),
+    listArrondissements(db),
+    db.from('pays').select('id, nom, code_iso2').order('nom', { ascending: true }),
+  ]);
+  if (paysData.error) throw paysData.error;
+
+  // Récupérer les villes pour chaque pays
+  const pays = await Promise.all(
+    (paysData.data || []).map(async (p) => {
+      const { data: villes, error: vErr } = await db
+        .from('villes')
+        .select('id, nom, sort_order')
+        .eq('pays_id', p.id)
+        .order('sort_order', { ascending: true });
+      if (vErr) throw vErr;
+      return {
+        id: p.id,
+        nom: p.nom,
+        code_iso2: p.code_iso2,
+        villes: (villes || []).map((v) => ({
+          id: v.id,
+          nom: v.nom,
+          arrondissements: arrondissements
+            .filter((a) => a.ville_id === v.id)
+            .map((a) => ({ id: a.id, name: a.name, zone_id: a.zone_id, sort_order: a.sort_order })),
+        })),
+      };
+    }),
+  );
+
+  // Arrondissements sans ville rattachée (legacy)
+  const unlinked = arrondissements.filter((a) => !a.ville_id);
+
+  return { zones, pays, arrondissements_unlinked: unlinked };
 }
 
 async function updateAdminZonesBoard(db, payload, adminUserId) {
