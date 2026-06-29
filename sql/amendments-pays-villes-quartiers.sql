@@ -193,7 +193,7 @@ BEGIN
 
   UPDATE arrondissements
   SET ville_id = v_bzv_id
-  WHERE nom IN ('Centre-ville', 'Bacongo', 'Poto-Poto', 'Makelekele', 'Moungali',
+  WHERE name IN ('Centre-ville', 'Bacongo', 'Poto-Poto', 'Makelekele', 'Moungali',
                  'Ouenzé', 'Talangaï', 'Mfilou', 'Madibou', 'Djiri', 'Autre')
     AND ville_id IS NULL;
 
