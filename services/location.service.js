@@ -9,6 +9,8 @@ function mapPays(row) {
     code_iso2: row.code_iso2,
     code_iso3: row.code_iso3,
     indicatif: row.indicatif || null,
+    phone_digits: row.phone_digits || null,
+    phone_format: row.phone_format || null,
   };
 }
 
@@ -66,7 +68,7 @@ async function listArrondissementsByVille(db, villeId) {
 /** Récupère la hiérarchie complète en un seul appel. */
 async function getFullLocationTree(db) {
   const [pays, villes, arrondissements] = await Promise.all([
-    db.from('pays').select('id, nom, code_iso2, code_iso3, indicatif').order('nom', { ascending: true }),
+    db.from('pays').select('id, nom, code_iso2, code_iso3, indicatif, phone_digits, phone_format').order('nom', { ascending: true }),
     db.from('villes').select('id, pays_id, nom, sort_order').order('sort_order', { ascending: true }),
     db.from('arrondissements').select('id, ville_id, name, zone_id, sort_order').order('sort_order', { ascending: true }),
   ]);

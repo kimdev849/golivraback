@@ -65,7 +65,7 @@ async function detectLocation(req, res, next) {
     // Chercher le pays correspondant dans notre base
     const { data: paysRow, error: paysErr } = await db
       .from('pays')
-      .select('id, nom, code_iso2, code_iso3, indicatif')
+      .select('id, nom, code_iso2, code_iso3, indicatif, phone_digits, phone_format')
       .eq('code_iso2', detected.pays.code_iso2)
       .maybeSingle();
 
@@ -82,6 +82,8 @@ async function detectLocation(req, res, next) {
         code_iso2: paysRow.code_iso2,
         code_iso3: paysRow.code_iso3,
         indicatif: paysRow.indicatif,
+        phone_digits: paysRow.phone_digits || null,
+        phone_format: paysRow.phone_format || null,
       };
 
       // Chercher les villes correspondant à la région détectée
