@@ -6,9 +6,9 @@ API Node.js (Express) pour l’application **GoLivra** : authentification (OTP S
 
 | Composant | Dépôt | Description |
 |-----------|-------|-------------|
-| **Backend API** (ce dépôt) | [KimJaver/GolivraBack](https://github.com/KimJaver/GolivraBack) | API Node.js / Express — logique métier, auth, OTP, commandes, livraisons |
-| **Site Admin** | [KimJaver/GolivraSiteAdmin](https://github.com/KimJaver/GolivraSiteAdmin) | Back-office web — TanStack Start, Vite, Tailwind, Radix |
-| **Site Vitrine** | [KimJaver/golivra](https://github.com/KimJaver/golivra) | Site statique / vitrine publique de GoLivra |
+| **Backend API** (ce dépôt) | [kimdev849/golivraback](https://github.com/kimdev849/golivraback) | API Node.js / Express — logique métier, auth, OTP, commandes, livraisons, paiements |
+| **App Mobile** | [kimdev849/golivra](https://github.com/kimdev849/golivra) | Application mobile Expo / React Native — clients, vendeurs, livreurs |
+| **Site Admin** | [kimdev849/siteadmingolivra](https://github.com/kimdev849/siteadmingolivra) | Back-office web — TanStack Start, Vite, Tailwind, Radix |
 
 ## Workflow Git
 
@@ -87,12 +87,12 @@ Voir [`payments/README.md`](./payments/README.md) pour l'architecture complète 
 
 ## Mise en ligne (test création de comptes, etc.)
 
-**Important :** [GitHub](https://github.com/KimJaver/GolivraBack) héberge uniquement le **code**. Pour une URL publique (`https://…`), il faut un **hébergeur** qui exécute Node.
+**Important :** [GitHub](https://github.com/kimdev849/golivraback) héberge uniquement le **code**. Pour une URL publique (`https://…`), il faut un **hébergeur** qui exécute Node.
 
 ### Option recommandée — Render (gratuit pour tester)
 
 1. Compte sur [Render](https://render.com/) (possible avec le même e-mail que GitHub, ex. `kimjaver7@gmail.com`).
-2. **New** → **Blueprint** → connecter le dépôt **KimJaver/GolivraBack** (autoriser Render sur GitHub si demandé).
+2. **New** → **Blueprint** → connecter le dépôt **kimdev849/golivraback** (autoriser Render sur GitHub si demandé).
 3. Render détecte `render.yaml` : valider le service **golivra-api**.
 4. Renseigner les variables d’environnement (Supabase secret, Twilio, etc.) — les mêmes que dans `.env.example`, **sans** commiter de secrets.
 5. Après le déploiement, noter l’URL du type `https://golivra-api.onrender.com` et tester :
@@ -135,12 +135,12 @@ L’app mobile doit pointer vers l’URL publique de l’API, par exemple :
 
 ## Pousser le code sur GitHub
 
-Dépôt cible : [https://github.com/KimJaver/GolivraBack](https://github.com/KimJaver/GolivraBack)
+Dépôt cible : [https://github.com/kimdev849/golivraback](https://github.com/kimdev849/golivraback)
 
 **Identité Git :**
 
 ```bash
-git config user.email "kimjaver7@gmail.com"
+git config user.email "kimdev849@gmail.com"
 git config user.name "GoLivra Dev"
 ```
 
