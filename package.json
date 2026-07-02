@@ -24,6 +24,7 @@
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "express-rate-limit": "^7.5.0",
+    "geoip-lite": "^2.0.3",
     "helmet": "^8.1.0",
     "twilio": "^6.0.0"
   }

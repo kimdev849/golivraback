@@ -11,6 +11,9 @@ function mapAddress(row) {
     quartier: row.quartier,
     ville: row.ville,
     pays: row.pays,
+    pays_id: row.pays_id || null,
+    ville_id: row.ville_id || null,
+    arrondissement_id: row.arrondissement_id || null,
     latitude: row.latitude != null ? Number(row.latitude) : null,
     longitude: row.longitude != null ? Number(row.longitude) : null,
     est_principale: row.est_principale === true,
@@ -31,6 +34,11 @@ function validateAddressBody(body, { requireAll = true } = {}) {
   const type = typeof body.type === 'string' ? body.type.trim() : 'domicile';
   const ville = typeof body.ville === 'string' && body.ville.trim() ? validators.sanitizeText(body.ville) : 'Brazzaville';
   const pays = typeof body.pays === 'string' && body.pays.trim() ? validators.sanitizeText(body.pays) : 'Congo';
+
+  // UUIDs FK (optionnels pour backward compat)
+  const paysId = typeof body.pays_id === 'string' && body.pays_id.trim() ? body.pays_id.trim() : null;
+  const villeId = typeof body.ville_id === 'string' && body.ville_id.trim() ? body.ville_id.trim() : null;
+  const arrondissementId = typeof body.arrondissement_id === 'string' && body.arrondissement_id.trim() ? body.arrondissement_id.trim() : null;
 
   if (requireAll) {
     if (!quartier) throw createHttpError(400, 'Le quartier est obligatoire.');
@@ -53,6 +61,9 @@ function validateAddressBody(body, { requireAll = true } = {}) {
     quartier,
     ville,
     pays,
+    pays_id: paysId,
+    ville_id: villeId,
+    arrondissement_id: arrondissementId,
     latitude: null,
     longitude: null,
     instructions: instructions || null,

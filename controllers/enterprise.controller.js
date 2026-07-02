@@ -30,6 +30,8 @@ function mapRestaurant(r, categorieNom) {
     adresse_quartier: r.adresse_quartier ?? null,
     adresse_ville: r.adresse_ville ?? null,
     adresse_pays: r.adresse_pays ?? null,
+    pays_id: r.pays_id || null,
+    ville_id: r.ville_id || null,
     latitude: r.latitude,
     longitude: r.longitude,
     statut_moderation: r.statut,
@@ -57,6 +59,8 @@ function mapBoutique(b, categorieNom) {
     adresse_quartier: b.adresse_quartier ?? null,
     adresse_ville: b.adresse_ville ?? null,
     adresse_pays: b.adresse_pays ?? null,
+    pays_id: b.pays_id || null,
+    ville_id: b.ville_id || null,
     latitude: b.latitude,
     longitude: b.longitude,
     statut_moderation: b.statut,
@@ -102,7 +106,7 @@ function isPubliclyVisible(row) {
 
 async function listEnterprises(req, res, next) {
   try {
-    const { type, categorie_id: categorieId } = req.query;
+    const { type, categorie_id: categorieId, ville_id: villeId } = req.query;
     if (type && !COMMERCE_TYPES.has(type)) {
       throw createHttpError(400, `Type de commerce invalide: ${type}`);
     }
@@ -118,6 +122,7 @@ async function listEnterprises(req, res, next) {
         .eq('statut', MODERATION.ACTIVE)
         .order('nom', { ascending: true });
       if (categorieId) q = q.eq('categorie_id', categorieId);
+      if (villeId) q = q.eq('ville_id', villeId);
       const { data, error } = await q;
       if (error) throw error;
       const catMap = await loadCategoryNamesMap(
@@ -136,6 +141,7 @@ async function listEnterprises(req, res, next) {
         .eq('statut', MODERATION.ACTIVE)
         .order('nom', { ascending: true });
       if (categorieId) q = q.eq('categorie_id', categorieId);
+      if (villeId) q = q.eq('ville_id', villeId);
       const { data, error } = await q;
       if (error) throw error;
       const catMap = await loadCategoryNamesMap(

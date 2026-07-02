@@ -205,7 +205,7 @@ async function register(req, res, next) {
   try {
     const rawRole = req.body.role;
     const role = typeof rawRole === 'string' && rawRole.trim() ? rawRole.trim() : 'client';
-    const { telephone: telephoneRaw, motDePasse, otpCode, imageUrl } = req.body;
+    const { telephone: telephoneRaw, motDePasse, otpCode, imageUrl, pays_id: paysId, ville_id: villeId } = req.body;
     requireFields(req.body, ['telephone', 'motDePasse', 'otpCode']);
     const avatarUrl =
       typeof imageUrl === 'string' && imageUrl.trim().startsWith('http') ? imageUrl.trim() : null;
@@ -219,6 +219,20 @@ async function register(req, res, next) {
     const telephone = normalizeCgE164(telephoneClean);
     if (!telephone) {
       throw createHttpError(400, 'Numéro de téléphone invalide. Indiquez +242 suivi de 9 chiffres (Congo).');
+    }
+
+    // Validation pays_id / ville_id (optionnels pour backward compat)
+    let resolvedPaysId = null;
+    let resolvedVilleId = null;
+    if (paysId) {
+      const { data: paysRow } = await db.from('pays').select('id').eq('id', paysId).maybeSingle();
+      if (!paysRow) throw createHttpError(400, 'Pays invalide.');
+      resolvedPaysId = paysId;
+    }
+    if (villeId) {
+      const { data: villeRow } = await db.from('villes').select('id').eq('id', villeId).maybeSingle();
+      if (!villeRow) throw createHttpError(400, 'Ville invalide.');
+      resolvedVilleId = villeId;
     }
 
     // ── Garde-fous AVANT toute écriture ───────────────────────────────
@@ -368,6 +382,21 @@ async function registerVendor(req, res, next) {
     const avatarUrl =
       typeof imageUrl === 'string' && imageUrl.trim().startsWith('http') ? imageUrl.trim() : null;
 
+    // Validation pays / ville (optionnels pour backward compat)
+    let resolvedPaysId = null;
+    let resolvedVilleId = null;
+    const { pays_id, ville_id } = req.body;
+    if (pays_id) {
+      const { data: paysRow } = await db.from('pays').select('id').eq('id', pays_id).maybeSingle();
+      if (!paysRow) throw createHttpError(400, 'Pays invalide.');
+      resolvedPaysId = pays_id;
+    }
+    if (ville_id) {
+      const { data: villeRow } = await db.from('villes').select('id').eq('id', ville_id).maybeSingle();
+      if (!villeRow) throw createHttpError(400, 'Ville invalide.');
+      resolvedVilleId = ville_id;
+    }
+
     // Validation commerce
     const entNomClean = validators.requireValid(enterprise.nom, validators.validateCommerceName, 'enterprise.nom');
     const entTelClean = validators.requireValid(enterprise.telephone, validators.validatePhoneCg, 'enterprise.telephone');
@@ -443,6 +472,8 @@ async function registerVendor(req, res, next) {
         description: entDescriptionClean,
         telephone: entTelClean,
         adresse_ligne1: entAdresseClean,
+        pays_id: resolvedPaysId,
+        ville_id: resolvedVilleId,
         latitude: enterprise.latitude ?? null,
         longitude: enterprise.longitude ?? null,
         statut,

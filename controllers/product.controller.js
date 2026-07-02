@@ -345,13 +345,16 @@ async function listProductFeed(req, res, next) {
     const db = getDb();
     const type = typeof req.query.type === 'string' ? req.query.type.toLowerCase() : null;
     const onlyPromo = String(req.query.promo || '').toLowerCase() === 'true';
+    const villeId = typeof req.query.ville_id === 'string' && req.query.ville_id.trim() ? req.query.ville_id.trim() : null;
     const limit = Math.max(1, Math.min(100, Number(req.query.limit) || 30));
     const offset = Math.max(0, Number(req.query.offset) || 0);
     const includePlats = !type || type === 'plat' || type === 'all';
     const includeArticles = !type || type === 'article' || type === 'all';
     const out = [];
     if (includePlats) {
-      const { data: restaurants, error: restErr } = await db.from('restaurants').select('id, nom, image_url').eq('statut', ACTIVE);
+      let qRest = db.from('restaurants').select('id, nom, image_url, ville_id').eq('statut', ACTIVE);
+      if (villeId) qRest = qRest.eq('ville_id', villeId);
+      const { data: restaurants, error: restErr } = await qRest;
       if (restErr) throw restErr;
       const restById = new Map((restaurants || []).map((r) => [r.id, r]));
       const restIds = [...restById.keys()];
