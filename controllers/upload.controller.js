@@ -2,7 +2,7 @@ const { createHttpError, requireFields } = require('../utils/http');
 const { parseDataUrl } = require('../utils/images');
 const { getSupabaseClient } = require('../services/supabase.service');
 
-const ALLOWED_FOLDERS = new Set(['profiles', 'enterprises', 'products']);
+const ALLOWED_FOLDERS = new Set(['profiles', 'enterprises', 'products', 'campagnes']);
 
 function extFromContentType(contentType) {
   if (contentType === 'image/jpeg') return 'jpg';
