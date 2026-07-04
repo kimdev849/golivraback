@@ -65,6 +65,7 @@ async function mapCourierMissionRow(db, liv) {
       commerce_nom: commerceNom || null,
       montant_total: liv.montant_total != null ? Number(liv.montant_total) : null,
       note: liv.note || null,
+      proof_photo_url: liv.proof_photo_url || null,
       commande: null,
     };
   }
@@ -112,6 +113,7 @@ async function mapCourierMissionRow(db, liv) {
     adresse_livraison: deliveryAddressFromSnapshot(liv.adresse_livraison_snapshot),
     adresse_retrait: adresseRetrait,
     commerce_nom: commerceNom,
+    proof_photo_url: liv.proof_photo_url || null,
     commande,
   };
 }
@@ -369,6 +371,7 @@ async function getDeliveryDetails(req, res, next) {
         adresse_retrait: adresseRetrait || '',
         client_nom: livraison.client_nom || client?.nom || null,
         client_telephone: livraison.client_telephone || client?.telephone || null,
+        proof_photo_url: livraison.proof_photo_url || null,
       },
       livreur: livreurRow
         ? {
@@ -696,6 +699,7 @@ function mapCourierMissionRowMinimal(liv) {
     livree_at: liv.livree_at || liv.livre_le || null,
     adresse_livraison: addr,
     adresse_retrait: '',
+    proof_photo_url: liv.proof_photo_url || null,
     commande: null,
     ouverte: false,
   };
@@ -744,9 +748,10 @@ async function completeDelivery(req, res, next) {
     const { deliveryId } = req.params;
     const db = getDb();
     const courierId = await getLivreurIdForUser(db, req.auth.userId);
+    const proofPhotoUrl = typeof req.body?.proofPhotoUrl === 'string' ? req.body.proofPhotoUrl.trim() : undefined;
 
     const { completeLivraisonAndSync } = require('../services/dispatch.service');
-    const data = await completeLivraisonAndSync(db, deliveryId, courierId);
+    const data = await completeLivraisonAndSync(db, deliveryId, courierId, proofPhotoUrl);
     try {
       return res.json(await mapCourierMissionRow(db, data));
     } catch (mapErr) {

@@ -2,7 +2,7 @@ const { createHttpError, requireFields } = require('../utils/http');
 const { parseDataUrl } = require('../utils/images');
 const { getSupabaseClient } = require('../services/supabase.service');
 
-const ALLOWED_FOLDERS = new Set(['profiles', 'enterprises', 'products', 'campagnes']);
+const ALLOWED_FOLDERS = new Set(['profiles', 'enterprises', 'products', 'campagnes', 'deliveries']);
 
 function extFromContentType(contentType) {
   if (contentType === 'image/jpeg') return 'jpg';
@@ -25,7 +25,7 @@ async function uploadBase64Image(req, res, next) {
     const { dataUrl, folder } = req.body;
 
     if (!ALLOWED_FOLDERS.has(folder)) {
-      throw createHttpError(400, 'Dossier invalide (profiles, enterprises ou products).');
+      throw createHttpError(400, 'Dossier invalide (profiles, enterprises, products, campagnes ou deliveries).');
     }
 
     const { contentType, base64 } = parseDataUrl(dataUrl);

@@ -78,8 +78,27 @@ async function advanceLivraisonStatut(db, livraisonId, livreurId, nextStatut, ex
   return data;
 }
 
-async function completeLivraisonRow(db, livraisonId, livreurId) {
+async function completeLivraisonRow(db, livraisonId, livreurId, proofPhotoUrl) {
   const now = new Date().toISOString();
+
+  // On essaie d'abord avec proof_photo_url...
+  if (proofPhotoUrl) {
+    try {
+      const photoPatches = [
+        { statut: 'livree', livree_at: now, livre_le: now, updated_at: now, proof_photo_url: proofPhotoUrl },
+        { statut: 'livree', livree_at: now, updated_at: now, proof_photo_url: proofPhotoUrl },
+        { statut: 'livree', livree_at: now, proof_photo_url: proofPhotoUrl },
+        { statut: 'livree', livre_le: now, proof_photo_url: proofPhotoUrl },
+        { statut: 'livree', proof_photo_url: proofPhotoUrl },
+      ];
+      return await updateLivraisonForCourier(db, livraisonId, livreurId, photoPatches);
+    } catch (photoErr) {
+      console.warn('[livraison-db] proof_photo_url non sauvegardée (colonne absente ou permissions) :', photoErr?.message || photoErr);
+      // Fall through : on marque la livraison comme livrée sans la photo
+    }
+  }
+
+  // Fallback sans proof_photo_url (colonne pas encore migrée ou RLS insuffisant)
   const data = await updateLivraisonForCourier(db, livraisonId, livreurId, [
     { statut: 'livree', livree_at: now, livre_le: now, updated_at: now },
     { statut: 'livree', livree_at: now, updated_at: now },
