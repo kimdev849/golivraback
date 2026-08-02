@@ -31,23 +31,6 @@ async function selectUserByPhone(db, telephone) {
   return full;
 }
 
-async function selectUserById(db, id) {
-  const full = await db
-    .from('utilisateurs')
-    .select(USER_SELECT_FULL)
-    .eq('id', id)
-    .maybeSingle();
-  if (!full.error) return full;
-  if (isMissingColumnError(full.error) && parseMissingColumn(full.error) === 'avatar_url') {
-    return db
-      .from('utilisateurs')
-      .select(USER_SELECT_BASE)
-      .eq('id', id)
-      .maybeSingle();
-  }
-  return full;
-}
-
 /** Insère un utilisateur en tolérant l'absence de colonne avatar_url en prod. */
 async function insertUtilisateur(db, payload) {
   const full = { ...payload, avatar_url: payload.avatar_url ?? null };
@@ -58,7 +41,8 @@ async function insertUtilisateur(db, payload) {
     .single();
   if (!error) return { data, error: null };
   if (isMissingColumnError(error) && parseMissingColumn(error) === 'avatar_url') {
-    const { avatar_url: _ignored, ...rest } = full;
+    const rest = { ...full };
+    delete rest.avatar_url;
     return db
       .from('utilisateurs')
       .insert(rest)
@@ -66,6 +50,16 @@ async function insertUtilisateur(db, payload) {
       .single();
   }
   return { data, error };
+}
+
+/** True si l'erreur vient d'une table/relation manquante en base (schéma incomplet). */
+function isMissingRelationError(error) {
+  const msg = String(error?.message || error?.details || '').toLowerCase();
+  return (
+    String(error?.code) === 'PGRST205' ||
+    (msg.includes('relation') && msg.includes('does not exist')) ||
+    msg.includes('could not find the table')
+  );
 }
 
 /** Valide pays/ville si les tables existent ; sinon accepte sans validation (schéma incomplet). */
@@ -84,8 +78,9 @@ async function resolveLocationRefs(db, { paysId, villeId }) {
       resolvedVilleId = villeId;
     }
   } catch (e) {
-    // Erreurs métier (400) remontées ; relations manquantes tolérées
+    // Erreurs métier (400) remontées ; seules les relations manquantes sont tolérées.
     if (e.status || e.statusCode) throw e;
+    if (!isMissingRelationError(e)) throw e;
     resolvedPaysId = paysId || null;
     resolvedVilleId = villeId || null;
   }
