@@ -23,8 +23,14 @@ async function getOrCreate(db, utilisateurId) {
     .insert({ utilisateur_id: utilisateurId })
     .select('*')
     .single();
-  if (error) throw error;
-  return rowToWallet(data);
+  if (!error) return rowToWallet(data);
+  // 23505 = contrainte d'unicité violée (2 requêtes simultanées ont inséré en
+  // parallèle). On relit : le portefeuille existe forcément maintenant.
+  if (String(error.code) === '23505') {
+    const again = await findByUtilisateur(db, utilisateurId);
+    if (again) return again;
+  }
+  throw error;
 }
 
 async function updateSolde(db, portefeuilleId, { solde, soldeEnAttente }) {

@@ -1,13 +1,14 @@
 const express = require('express');
 const { getMine, replace, clear } = require('../controllers/cart.controller');
 const { authMiddleware } = require('../middlewares/auth.middleware');
-const { requireRoles } = require('../middlewares/role.middleware');
 
 const router = express.Router();
-const clientOnly = [authMiddleware, requireRoles(['client', 'admin'])];
+// Tout utilisateur authentifié peut avoir un panier (les vendeurs sont aussi
+// clients de l'app). La restriction client-only générait des 403 en masse.
+const anyAuth = [authMiddleware];
 
-router.get('/', ...clientOnly, getMine);
-router.put('/', ...clientOnly, replace);
-router.delete('/', ...clientOnly, clear);
+router.get('/', ...anyAuth, getMine);
+router.put('/', ...anyAuth, replace);
+router.delete('/', ...anyAuth, clear);
 
 module.exports = router;

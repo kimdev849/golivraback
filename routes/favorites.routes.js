@@ -10,21 +10,22 @@ const {
   removeProduct,
 } = require('../controllers/favorites.controller');
 const { authMiddleware } = require('../middlewares/auth.middleware');
-const { requireRoles } = require('../middlewares/role.middleware');
 
 const router = express.Router();
-const clientOnly = [authMiddleware, requireRoles(['client', 'admin'])];
+// Tout utilisateur authentifié (client, restaurateur, commercant, livreur, admin…)
+// peut gérer ses favoris. Les rôles vendeurs sont également clients de l'app.
+const anyAuth = [authMiddleware];
 
-router.get('/', ...clientOnly, listMine);
-router.post('/', ...clientOnly, add);
-router.post('/toggle', ...clientOnly, toggle);
-router.post('/sync', ...clientOnly, sync);
-router.delete('/:enterpriseId', ...clientOnly, remove);
+router.get('/', ...anyAuth, listMine);
+router.post('/', ...anyAuth, add);
+router.post('/toggle', ...anyAuth, toggle);
+router.post('/sync', ...anyAuth, sync);
+router.delete('/:enterpriseId', ...anyAuth, remove);
 
 // Favoris PRODUITS (plats + articles). Endpoints scopes sous /products
 // pour ne pas interferer avec les routes entreprises ci-dessus.
-router.get('/products', ...clientOnly, listMineProducts);
-router.post('/products/toggle', ...clientOnly, toggleProduct);
-router.delete('/products/:productId', ...clientOnly, removeProduct);
+router.get('/products', ...anyAuth, listMineProducts);
+router.post('/products/toggle', ...anyAuth, toggleProduct);
+router.delete('/products/:productId', ...anyAuth, removeProduct);
 
 module.exports = router;

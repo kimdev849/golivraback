@@ -980,7 +980,7 @@ async function mapAdminDeliveryRow(db, liv) {
     collectee_at: liv.collectee_at,
     collectee_at_label: formatDateTimeFr(liv.collectee_at),
     livree_at: liv.livree_at,
-    livree_at_label: formatDateTimeFr(livree_at),
+    livree_at_label: formatDateTimeFr(liv.livree_at),
     commande_created_at: commande?.created_at ?? null,
     commande_created_at_label: formatDateTimeFr(commande?.created_at),
     timeline: mapLivraisonTimeline(liv),

@@ -89,12 +89,87 @@ async function listEnTraitement(db, { limit = 100 } = {}) {
   return (data || []).map(rowToWithdrawal);
 }
 
+const WITHDRAWAL_STATUT_ALIASES = {
+  paye: 'reussi',
+  payé: 'reussi',
+  approuve: 'en_traitement',
+};
+
+function mapStatutForNewTable(statut) {
+  return WITHDRAWAL_STATUT_ALIASES[String(statut || '').toLowerCase()] || statut;
+}
+
+function isMissingRelationError(error) {
+  const msg = String(error?.message || error?.details || '').toLowerCase();
+  return (
+    String(error?.code) === 'PGRST205' ||
+    (msg.includes('relation') && msg.includes('does not exist')) ||
+    msg.includes('could not find the table')
+  );
+}
+
+function isInvalidEnumValueError(error) {
+  const msg = String(error?.message || error?.details || '').toLowerCase();
+  return msg.includes('invalid input value for enum');
+}
+
 async function listAll(db, { statut, limit = 100 } = {}) {
-  let q = db.from('withdrawals').select('*').order('created_at', { ascending: false }).limit(limit);
+  // Table `withdrawals` (schéma paiements refactorisé).
+  const tryNew = async (statutFilter) => {
+    let q = db.from('withdrawals').select('*').order('created_at', { ascending: false }).limit(limit);
+    if (statutFilter) q = q.eq('statut', statutFilter);
+    const { data, error } = await q;
+    if (error) throw error;
+    return (data || []).map(rowToWithdrawal);
+  };
+
+  try {
+    return await tryNew(statut ? mapStatutForNewTable(statut) : undefined);
+  } catch (err) {
+    if (isInvalidEnumValueError(err)) {
+      // Le statut demandé n'existe pas dans le nouvel enum (ex. « paye ») →
+      // on tente l'équivalent, sinon on relance sans filtre pour ne pas casser la page.
+      const mapped = mapStatutForNewTable(statut);
+      if (mapped !== statut) {
+        try {
+          return await tryNew(mapped);
+        } catch {
+          return tryNew(undefined);
+        }
+      }
+      return tryNew(undefined);
+    }
+    if (!isMissingRelationError(err)) throw err;
+  }
+
+  // Table `withdrawals` absente → fallback sur la table legacy `demandes_retrait`.
+  let q = db.from('demandes_retrait').select('*').order('created_at', { ascending: false }).limit(limit);
   if (statut) q = q.eq('statut', statut);
   const { data, error } = await q;
+  if (isMissingRelationError(error)) return [];
   if (error) throw error;
-  return (data || []).map(rowToWithdrawal);
+  return (data || []).map((row) => ({
+    id: row.id,
+    portefeuilleId: row.portefeuille_id,
+    utilisateurId: row.utilisateur_id,
+    montantFcfa: Number(row.montant ?? 0),
+    devise: row.devise || 'XAF',
+    methode: row.methode,
+    numeroCompte: row.numero_compte,
+    nomBeneficiaire: row.nom_beneficiaire || null,
+    statut: row.statut,
+    motifRejet: row.motif_rejet || null,
+    noteDemandeur: row.note_demandeur || null,
+    noteAdmin: row.note_admin || null,
+    payoutId: row.payout_id || null,
+    payoutFailureReason: row.payout_failure_reason || null,
+    tentatives: Number(row.tentatives ?? 0),
+    traitePar: row.traite_par || null,
+    traiteAt: row.traite_at || null,
+    processedAt: row.processed_at || null,
+    creeLe: row.created_at,
+    misAJourLe: row.updated_at,
+  }));
 }
 
 // ── Payouts ───────────────────────────────────────────────────────────────────

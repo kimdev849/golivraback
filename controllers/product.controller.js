@@ -17,6 +17,53 @@ async function resolveEstablishment(db, enterpriseId) {
   return null;
 }
 
+/**
+ * Sélectionne les commerces actifs avec gestion défensive des colonnes :
+ * si une colonne optionnelle (image_url, ville_id, logo_url…) n'existe pas
+ * dans le schéma appliqué en production, on réessaie sans elle au lieu de 500.
+ */
+async function selectActiveEstablishments(db, table, { villeId } = {}) {
+  const base = ['id', 'nom'];
+  const optional = ['image_url', 'ville_id', 'logo_url'];
+  const attempt = (cols, withVille) => {
+    let q = db.from(table).select(cols.join(', ')).eq('statut', ACTIVE);
+    if (withVille && villeId) q = q.eq('ville_id', villeId);
+    return q;
+  };
+  const full = await attempt([...base, ...optional], true);
+  if (!full.error) return full.data || [];
+  if (optional.some((c) => isMissingColumnError(full.error, c))) {
+    const baseRes = await attempt(base, false);
+    if (!baseRes.error) return baseRes.data || [];
+    throw baseRes.error;
+  }
+  throw full.error;
+}
+
+async function searchActiveEstablishments(db, table, pattern, limit) {
+  const base = ['id', 'nom', 'description', 'adresse_ligne1', 'categorie_id'];
+  const optional = ['image_url', 'logo_url'];
+  const attempt = (cols) =>
+    db
+      .from(table)
+      .select(cols.join(', '))
+      .eq('statut', ACTIVE)
+      .or(`nom.ilike.${pattern},description.ilike.${pattern},adresse_ligne1.ilike.${pattern}`)
+      .limit(limit);
+  const full = await attempt([...base, ...optional]);
+  if (!full.error) return full.data || [];
+  if (optional.some((c) => isMissingColumnError(full.error, c))) {
+    const baseRes = await attempt(base);
+    if (!baseRes.error) return baseRes.data || [];
+    throw baseRes.error;
+  }
+  throw full.error;
+}
+
+function enterpriseImageUrl(row) {
+  return row?.logo_url || row?.image_url || null;
+}
+
 function canManageEstablishment(req, row) {
   if (!req.auth || !row) return false;
   if (req.auth.role === 'admin') return true;
@@ -352,10 +399,7 @@ async function listProductFeed(req, res, next) {
     const includeArticles = !type || type === 'article' || type === 'all';
     const out = [];
     if (includePlats) {
-      let qRest = db.from('restaurants').select('id, nom, image_url, ville_id').eq('statut', ACTIVE);
-      if (villeId) qRest = qRest.eq('ville_id', villeId);
-      const { data: restaurants, error: restErr } = await qRest;
-      if (restErr) throw restErr;
+      const restaurants = await selectActiveEstablishments(db, 'restaurants', { villeId });
       const restById = new Map((restaurants || []).map((r) => [r.id, r]));
       const restIds = [...restById.keys()];
       if (restIds.length) {
@@ -366,13 +410,12 @@ async function listProductFeed(req, res, next) {
         for (const p of data || []) {
           const rest = restById.get(p.restaurant_id);
           if (!rest) continue;
-          out.push({ ...mapPlatToProduct(p, p.restaurant_id), enterprise_id: p.restaurant_id, enterprise_nom: rest.nom || null, enterprise_type: 'restaurant', enterprise_image_url: rest.image_url || null });
+          out.push({ ...mapPlatToProduct(p, p.restaurant_id), enterprise_id: p.restaurant_id, enterprise_nom: rest.nom || null, enterprise_type: 'restaurant', enterprise_image_url: enterpriseImageUrl(rest) });
         }
       }
     }
     if (includeArticles) {
-      const { data: boutiques, error: boutErr } = await db.from('boutiques').select('id, nom, image_url').eq('statut', ACTIVE);
-      if (boutErr) throw boutErr;
+      const boutiques = await selectActiveEstablishments(db, 'boutiques');
       const boutById = new Map((boutiques || []).map((b) => [b.id, b]));
       const boutIds = [...boutById.keys()];
       if (boutIds.length) {
@@ -383,7 +426,7 @@ async function listProductFeed(req, res, next) {
         for (const a of data || []) {
           const bou = boutById.get(a.boutique_id);
           if (!bou) continue;
-          out.push({ ...mapArticleToProduct(a, a.boutique_id), enterprise_id: a.boutique_id, enterprise_nom: bou.nom || null, enterprise_type: 'boutique', enterprise_image_url: bou.image_url || null });
+          out.push({ ...mapArticleToProduct(a, a.boutique_id), enterprise_id: a.boutique_id, enterprise_nom: bou.nom || null, enterprise_type: 'boutique', enterprise_image_url: enterpriseImageUrl(bou) });
         }
       }
     }
@@ -419,18 +462,15 @@ async function searchCatalog(req, res, next) {
     const includePlats = type === 'all' || type === 'plat';
     const includeArticles = type === 'all' || type === 'article';
     if (includeRestaurants) {
-      const { data, error } = await db.from('restaurants').select('id, nom, description, adresse, image_url, type, categorie_id').eq('statut', ACTIVE).or(`nom.ilike.${pattern},description.ilike.${pattern},adresse.ilike.${pattern}`).limit(Math.min(limit, 12));
-      if (error) throw error;
-      for (const r of data || []) enterprises.push({ id: r.id, nom: r.nom, type: 'restaurant', description: r.description ?? null, adresse: r.adresse ?? null, image_url: r.image_url ?? null, categorie_id: r.categorie_id ?? null });
+      const rows = await searchActiveEstablishments(db, 'restaurants', pattern, Math.min(limit, 12));
+      for (const r of rows || []) enterprises.push({ id: r.id, nom: r.nom, type: 'restaurant', description: r.description ?? null, adresse: r.adresse_ligne1 ?? null, image_url: enterpriseImageUrl(r), categorie_id: r.categorie_id ?? null });
     }
     if (includeBoutiques) {
-      const { data, error } = await db.from('boutiques').select('id, nom, description, adresse, image_url, type, categorie_id').eq('statut', ACTIVE).or(`nom.ilike.${pattern},description.ilike.${pattern},adresse.ilike.${pattern}`).limit(Math.min(limit, 12));
-      if (error) throw error;
-      for (const b of data || []) enterprises.push({ id: b.id, nom: b.nom, type: 'boutique', description: b.description ?? null, adresse: b.adresse ?? null, image_url: b.image_url ?? null, categorie_id: b.categorie_id ?? null });
+      const rows = await searchActiveEstablishments(db, 'boutiques', pattern, Math.min(limit, 12));
+      for (const b of rows || []) enterprises.push({ id: b.id, nom: b.nom, type: 'boutique', description: b.description ?? null, adresse: b.adresse_ligne1 ?? null, image_url: enterpriseImageUrl(b), categorie_id: b.categorie_id ?? null });
     }
     if (includePlats) {
-      const { data: restaurants, error: restErr } = await db.from('restaurants').select('id, nom, image_url').eq('statut', ACTIVE);
-      if (restErr) throw restErr;
+      const restaurants = await selectActiveEstablishments(db, 'restaurants');
       const restById = new Map((restaurants || []).map((r) => [r.id, r]));
       const restIds = [...restById.keys()];
       if (restIds.length) {
@@ -439,13 +479,12 @@ async function searchCatalog(req, res, next) {
         for (const p of data || []) {
           const rest = restById.get(p.restaurant_id);
           if (!rest) continue;
-          products.push({ ...mapPlatToProduct(p, p.restaurant_id), enterprise_id: p.restaurant_id, enterprise_nom: rest.nom || null, enterprise_type: 'restaurant', enterprise_image_url: rest.image_url || null });
+          products.push({ ...mapPlatToProduct(p, p.restaurant_id), enterprise_id: p.restaurant_id, enterprise_nom: rest.nom || null, enterprise_type: 'restaurant', enterprise_image_url: enterpriseImageUrl(rest) });
         }
       }
     }
     if (includeArticles) {
-      const { data: boutiques, error: boutErr } = await db.from('boutiques').select('id, nom, image_url').eq('statut', ACTIVE);
-      if (boutErr) throw boutErr;
+      const boutiques = await selectActiveEstablishments(db, 'boutiques');
       const boutById = new Map((boutiques || []).map((b) => [b.id, b]));
       const boutIds = [...boutById.keys()];
       if (boutIds.length) {
@@ -454,7 +493,7 @@ async function searchCatalog(req, res, next) {
         for (const a of data || []) {
           const bou = boutById.get(a.boutique_id);
           if (!bou) continue;
-          products.push({ ...mapArticleToProduct(a, a.boutique_id), enterprise_id: a.boutique_id, enterprise_nom: bou.nom || null, enterprise_type: 'boutique', enterprise_image_url: bou.image_url || null });
+          products.push({ ...mapArticleToProduct(a, a.boutique_id), enterprise_id: a.boutique_id, enterprise_nom: bou.nom || null, enterprise_type: 'boutique', enterprise_image_url: enterpriseImageUrl(bou) });
         }
       }
     }

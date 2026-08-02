@@ -421,11 +421,46 @@ async function listIncidentGroups({ windowMin = 60, source, severity, state } = 
   return data || [];
 }
 
+function parseJsonField(value) {
+  if (value == null || typeof value !== 'string') return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+/**
+ * Normalise les champs JSON (frames, source_location, code_context, metadata…) :
+ * les anciennes lignes peuvent les stocker en TEXT au lieu de JSONB → l'admin
+ * web (page « Analyser ») planterait sinon.
+ */
+function normalizeIncident(row) {
+  if (!row || typeof row !== 'object') return row;
+  return {
+    ...row,
+    frames: parseJsonField(row.frames),
+    source_location: parseJsonField(row.source_location),
+    code_context: parseJsonField(row.code_context),
+    metadata: parseJsonField(row.metadata),
+    request_payload: parseJsonField(row.request_payload),
+  };
+}
+
 async function getIncidentById(id) {
   const db = getDb();
   const { data, error } = await db.from('app_incidents').select('*').eq('id', id).maybeSingle();
   if (error) throw error;
-  return data;
+  return normalizeIncident(data);
+}
+
+function isMissingRelationError(error) {
+  const msg = String(error?.message || error?.details || '').toLowerCase();
+  return (
+    String(error?.code) === 'PGRST205' ||
+    (msg.includes('relation') && msg.includes('does not exist')) ||
+    msg.includes('could not find the table')
+  );
 }
 
 async function getIncidentEvents(incidentId) {
@@ -436,6 +471,8 @@ async function getIncidentEvents(incidentId) {
     .eq('incident_id', incidentId)
     .order('created_at', { ascending: false })
     .limit(200);
+  // Table incident_events absente (migration observabilité v2 non appliquée) → timeline vide.
+  if (isMissingRelationError(error)) return [];
   if (error) throw error;
   return data || [];
 }

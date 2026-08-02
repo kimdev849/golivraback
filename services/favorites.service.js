@@ -126,7 +126,13 @@ async function syncFavorites(db, userId, enterpriseIds) {
 
   for (const id of ids) {
     if (!currentIds.has(id)) {
-      await addFavorite(db, userId, id);
+      try {
+        await addFavorite(db, userId, id);
+      } catch (err) {
+        // Commerce supprimé entre-temps : on ignore, pas de 404 sur le batch.
+        if (err?.status === 404 || err?.statusCode === 404) continue;
+        throw err;
+      }
     }
   }
 
@@ -156,6 +162,16 @@ module.exports = {
 
 const VALID_KINDS = new Set(['plat', 'article']);
 
+/** True si l'erreur vient d'une table/relation manquante en base (schéma incomplet). */
+function isMissingRelationError(error) {
+  const msg = String(error?.message || error?.details || '').toLowerCase();
+  return (
+    String(error?.code) === 'PGRST205' ||
+    msg.includes('relation') && msg.includes('does not exist') ||
+    msg.includes('could not find the table')
+  );
+}
+
 async function verifyProductExists(db, productId, kind) {
   if (!VALID_KINDS.has(kind)) return false;
   const table = kind === 'plat' ? 'plats' : 'articles';
@@ -169,6 +185,8 @@ async function listFavoriteProducts(db, userId) {
     .select('produit_id, produit_kind, created_at')
     .eq('client_id', userId)
     .order('created_at', { ascending: false });
+  // Table absente (migration 006 non appliquée) → liste vide plutôt qu'un 500.
+  if (isMissingRelationError(error)) return [];
   if (error) throw error;
   return (data || []).map((row) => ({
     produit_id: row.produit_id,
@@ -185,13 +203,20 @@ async function toggleFavoriteProduct(db, userId, productId, kind) {
   const exists = await verifyProductExists(db, productId, kind);
   if (!exists) throw createHttpError(404, 'Produit introuvable.');
 
-  const { data: existing } = await db
+  const { data: existing, error: existingErr } = await db
     .from('favoris_produits')
     .select('produit_id')
     .eq('client_id', userId)
     .eq('produit_id', productId)
     .eq('produit_kind', kind)
     .maybeSingle();
+
+  if (isMissingRelationError(existingErr)) {
+    // Table absente → on ne peut pas persister, on renvoie l'état côté client
+    // sans casser l'UX (le client garde ses favoris localement).
+    return { produit_id: productId, produit_kind: kind, favori: true, degraded: true };
+  }
+  if (existingErr) throw existingErr;
 
   if (existing) {
     await removeFavoriteProduct(db, userId, productId, kind);
@@ -201,6 +226,9 @@ async function toggleFavoriteProduct(db, userId, productId, kind) {
   const { error } = await db
     .from('favoris_produits')
     .insert({ client_id: userId, produit_id: productId, produit_kind: kind });
+  if (isMissingRelationError(error)) {
+    return { produit_id: productId, produit_kind: kind, favori: true, degraded: true };
+  }
   if (error) throw error;
   return { produit_id: productId, produit_kind: kind, favori: true };
 }
@@ -209,11 +237,15 @@ async function removeFavoriteProduct(db, userId, productId, kind) {
   if (!productId || !VALID_KINDS.has(kind)) {
     return { produit_id: productId, produit_kind: kind, favori: false };
   }
-  await db
+  const { error } = await db
     .from('favoris_produits')
     .delete()
     .eq('client_id', userId)
     .eq('produit_id', productId)
     .eq('produit_kind', kind);
+  if (isMissingRelationError(error)) {
+    return { produit_id: productId, produit_kind: kind, favori: false };
+  }
+  if (error) throw error;
   return { produit_id: productId, produit_kind: kind, favori: false };
 }

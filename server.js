@@ -93,8 +93,9 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-app.use(express.json({ limit: '15mb' }));
-app.use(express.urlencoded({ limit: '15mb', extended: true }));
+// Limite généreuse : les images sont envoyées en base64 (un JPEG 8 Mo ≈ 11 Mo base64).
+app.use(express.json({ limit: '30mb' }));
+app.use(express.urlencoded({ limit: '30mb', extended: true }));
 app.use(requestContextMiddleware);
 
 app.get('/health', (_req, res) => {

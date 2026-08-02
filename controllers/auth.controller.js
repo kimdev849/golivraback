@@ -6,6 +6,91 @@ const { normalizeCgE164 } = require('../utils/phone');
 const { findPendingOtp, deleteOtpById } = require('../services/otp.store');
 const { getPreferences, updatePreferences } = require('../services/preferences.service');
 const { getPublicSettings } = require('../services/settings.service');
+const { parseMissingColumn, isMissingColumnError } = require('../utils/supabase-errors');
+
+const USER_SELECT_FULL =
+  'id, nom, telephone, email, mot_de_passe_hash, role_id, est_approuve, est_actif, est_supprime, avatar_url';
+const USER_SELECT_BASE =
+  'id, nom, telephone, email, mot_de_passe_hash, role_id, est_approuve, est_actif, est_supprime';
+
+/** Sélectionne un utilisateur par téléphone en tolérant l'absence de colonne avatar_url. */
+async function selectUserByPhone(db, telephone) {
+  const full = await db
+    .from('utilisateurs')
+    .select(USER_SELECT_FULL)
+    .eq('telephone', telephone)
+    .maybeSingle();
+  if (!full.error) return full;
+  if (isMissingColumnError(full.error) && parseMissingColumn(full.error) === 'avatar_url') {
+    return db
+      .from('utilisateurs')
+      .select(USER_SELECT_BASE)
+      .eq('telephone', telephone)
+      .maybeSingle();
+  }
+  return full;
+}
+
+async function selectUserById(db, id) {
+  const full = await db
+    .from('utilisateurs')
+    .select(USER_SELECT_FULL)
+    .eq('id', id)
+    .maybeSingle();
+  if (!full.error) return full;
+  if (isMissingColumnError(full.error) && parseMissingColumn(full.error) === 'avatar_url') {
+    return db
+      .from('utilisateurs')
+      .select(USER_SELECT_BASE)
+      .eq('id', id)
+      .maybeSingle();
+  }
+  return full;
+}
+
+/** Insère un utilisateur en tolérant l'absence de colonne avatar_url en prod. */
+async function insertUtilisateur(db, payload) {
+  const full = { ...payload, avatar_url: payload.avatar_url ?? null };
+  const { data, error } = await db
+    .from('utilisateurs')
+    .insert(full)
+    .select('id, nom, telephone, email, role_id, est_approuve, avatar_url, created_at')
+    .single();
+  if (!error) return { data, error: null };
+  if (isMissingColumnError(error) && parseMissingColumn(error) === 'avatar_url') {
+    const { avatar_url: _ignored, ...rest } = full;
+    return db
+      .from('utilisateurs')
+      .insert(rest)
+      .select('id, nom, telephone, email, role_id, est_approuve, created_at')
+      .single();
+  }
+  return { data, error };
+}
+
+/** Valide pays/ville si les tables existent ; sinon accepte sans validation (schéma incomplet). */
+async function resolveLocationRefs(db, { paysId, villeId }) {
+  let resolvedPaysId = null;
+  let resolvedVilleId = null;
+  try {
+    if (paysId) {
+      const { data: paysRow } = await db.from('pays').select('id').eq('id', paysId).maybeSingle();
+      if (!paysRow) throw createHttpError(400, 'Pays invalide.');
+      resolvedPaysId = paysId;
+    }
+    if (villeId) {
+      const { data: villeRow } = await db.from('villes').select('id').eq('id', villeId).maybeSingle();
+      if (!villeRow) throw createHttpError(400, 'Ville invalide.');
+      resolvedVilleId = villeId;
+    }
+  } catch (e) {
+    // Erreurs métier (400) remontées ; relations manquantes tolérées
+    if (e.status || e.statusCode) throw e;
+    resolvedPaysId = paysId || null;
+    resolvedVilleId = villeId || null;
+  }
+  return { resolvedPaysId, resolvedVilleId };
+}
 
 const PUBLIC_REGISTER_ROLES = new Set(['client', 'restaurateur', 'commercant']);
 const STAFF_LOGIN_ROLES = new Set(['admin', 'gestionnaire_logistique']);
@@ -124,11 +209,7 @@ async function resetPassword(req, res, next) {
     const db = getDb();
     const otpRow = await findValidOtpRow(db, telephone, otpClean);
 
-    const { data: user, error: userErr } = await db
-      .from('utilisateurs')
-      .select('id, nom, telephone, email, role_id, est_approuve, est_actif, est_supprime, avatar_url')
-      .eq('telephone', telephone)
-      .maybeSingle();
+    const { data: user, error: userErr } = await selectUserByPhone(db, telephone);
 
     if (userErr) throw userErr;
     if (!user) {
@@ -222,18 +303,7 @@ async function register(req, res, next) {
     }
 
     // Validation pays_id / ville_id (optionnels pour backward compat)
-    let resolvedPaysId = null;
-    let resolvedVilleId = null;
-    if (paysId) {
-      const { data: paysRow } = await db.from('pays').select('id').eq('id', paysId).maybeSingle();
-      if (!paysRow) throw createHttpError(400, 'Pays invalide.');
-      resolvedPaysId = paysId;
-    }
-    if (villeId) {
-      const { data: villeRow } = await db.from('villes').select('id').eq('id', villeId).maybeSingle();
-      if (!villeRow) throw createHttpError(400, 'Ville invalide.');
-      resolvedVilleId = villeId;
-    }
+    const { resolvedPaysId, resolvedVilleId } = await resolveLocationRefs(db, { paysId, villeId });
 
     // ── Garde-fous AVANT toute écriture ───────────────────────────────
     await assertSignupsAllowed(db);
@@ -254,19 +324,15 @@ async function register(req, res, next) {
     const hashedPassword = await bcrypt.hash(motDePasse, 10);
 
     // ── INSERT utilisateur (point de non-retour) ──────────────────────
-    const { data, error } = await db
-      .from('utilisateurs')
-      .insert({
-        nom: nomClean,
-        telephone,
-        mot_de_passe_hash: hashedPassword,
-        role_id: roleRow.id,
-        est_verifie: true,
-        est_approuve: role === 'client',
-        avatar_url: avatarUrl,
-      })
-      .select('id, nom, telephone, email, role_id, est_approuve, avatar_url, created_at')
-      .single();
+    const { data, error } = await insertUtilisateur(db, {
+      nom: nomClean,
+      telephone,
+      mot_de_passe_hash: hashedPassword,
+      role_id: roleRow.id,
+      est_verifie: true,
+      est_approuve: role === 'client',
+      avatar_url: avatarUrl,
+    });
 
     if (error) {
       if (error.code === '23505') throw createHttpError(409, 'Ce numéro de téléphone est déjà enregistré');
@@ -383,19 +449,8 @@ async function registerVendor(req, res, next) {
       typeof imageUrl === 'string' && imageUrl.trim().startsWith('http') ? imageUrl.trim() : null;
 
     // Validation pays / ville (optionnels pour backward compat)
-    let resolvedPaysId = null;
-    let resolvedVilleId = null;
     const { pays_id, ville_id } = req.body;
-    if (pays_id) {
-      const { data: paysRow } = await db.from('pays').select('id').eq('id', pays_id).maybeSingle();
-      if (!paysRow) throw createHttpError(400, 'Pays invalide.');
-      resolvedPaysId = pays_id;
-    }
-    if (ville_id) {
-      const { data: villeRow } = await db.from('villes').select('id').eq('id', ville_id).maybeSingle();
-      if (!villeRow) throw createHttpError(400, 'Ville invalide.');
-      resolvedVilleId = ville_id;
-    }
+    const { resolvedPaysId, resolvedVilleId } = await resolveLocationRefs(db, { paysId: pays_id, villeId: ville_id });
 
     // Validation commerce
     const entNomClean = validators.requireValid(enterprise.nom, validators.validateCommerceName, 'enterprise.nom');
@@ -432,19 +487,15 @@ async function registerVendor(req, res, next) {
 
     // 1) Insertion utilisateur
     const hashedPassword = await bcrypt.hash(motDePasse, 10);
-    const { data: userRow, error: userError } = await db
-      .from('utilisateurs')
-      .insert({
-        nom: nomClean,
-        telephone,
-        mot_de_passe_hash: hashedPassword,
-        role_id: roleRow.id,
-        est_verifie: true,
-        est_approuve: false, // les marchands sont toujours en attente de modération
-        avatar_url: avatarUrl,
-      })
-      .select('id, nom, telephone, email, role_id, est_approuve, avatar_url, created_at')
-      .single();
+    const { data: userRow, error: userError } = await insertUtilisateur(db, {
+      nom: nomClean,
+      telephone,
+      mot_de_passe_hash: hashedPassword,
+      role_id: roleRow.id,
+      est_verifie: true,
+      est_approuve: false, // les marchands sont toujours en attente de modération
+      avatar_url: avatarUrl,
+    });
 
     if (userError) {
       if (userError.code === '23505') throw createHttpError(409, 'Ce numéro de téléphone est déjà enregistré');
@@ -585,11 +636,7 @@ async function login(req, res, next) {
 
     const db = getDb();
 
-    const { data: user, error } = await db
-      .from('utilisateurs')
-      .select('id, nom, telephone, email, mot_de_passe_hash, role_id, est_approuve, est_actif, est_supprime, avatar_url')
-      .eq('telephone', telephone)
-      .single();
+    const { data: user, error } = await selectUserByPhone(db, telephone);
 
     if (error || !user) {
       throw createHttpError(401, 'Téléphone ou mot de passe incorrect');

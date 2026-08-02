@@ -33,12 +33,24 @@ function mapArrondissement(row) {
   };
 }
 
+/** True si l'erreur vient d'une table/relation manquante en base (schéma incomplet). */
+function isMissingRelationError(error) {
+  const msg = String(error?.message || error?.details || '').toLowerCase();
+  return (
+    String(error?.code) === 'PGRST205' ||
+    (msg.includes('relation') && msg.includes('does not exist')) ||
+    msg.includes('could not find the table')
+  );
+}
+
 /** Liste tous les pays. */
 async function listPays(db) {
   const { data, error } = await db
     .from('pays')
     .select('id, nom, code_iso2, code_iso3, indicatif')
     .order('nom', { ascending: true });
+  // Table absente (migration pays/villes non appliquée) → liste vide plutôt qu'un 404.
+  if (isMissingRelationError(error)) return [];
   if (error) throw error;
   return (data || []).map(mapPays);
 }
@@ -50,6 +62,7 @@ async function listVillesByPays(db, paysId) {
     .select('id, pays_id, nom, sort_order')
     .eq('pays_id', paysId)
     .order('sort_order', { ascending: true });
+  if (isMissingRelationError(error)) return [];
   if (error) throw error;
   return (data || []).map(mapVille);
 }
@@ -61,6 +74,7 @@ async function listArrondissementsByVille(db, villeId) {
     .select('id, ville_id, name, zone_id, sort_order')
     .eq('ville_id', villeId)
     .order('sort_order', { ascending: true });
+  if (isMissingRelationError(error)) return [];
   if (error) throw error;
   return (data || []).map(mapArrondissement);
 }
@@ -73,9 +87,9 @@ async function getFullLocationTree(db) {
     db.from('arrondissements').select('id, ville_id, name, zone_id, sort_order').order('sort_order', { ascending: true }),
   ]);
 
-  if (pays.error) throw pays.error;
-  if (villes.error) throw villes.error;
-  if (arrondissements.error) throw arrondissements.error;
+  if (pays.error && !isMissingRelationError(pays.error)) throw pays.error;
+  if (villes.error && !isMissingRelationError(villes.error)) throw villes.error;
+  if (arrondissements.error && !isMissingRelationError(arrondissements.error)) throw arrondissements.error;
 
   return {
     pays: (pays.data || []).map(mapPays),

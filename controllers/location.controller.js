@@ -69,7 +69,13 @@ async function detectLocation(req, res, next) {
       .eq('code_iso2', detected.pays.code_iso2)
       .maybeSingle();
 
-    if (paysErr) throw paysErr;
+    // Table pays absente (schéma incomplet) → on renvoie un résultat dégradé sans 500.
+    const msg = String(paysErr?.message || paysErr?.details || '').toLowerCase();
+    const relationMissing =
+      String(paysErr?.code) === 'PGRST205' ||
+      (msg.includes('relation') && msg.includes('does not exist')) ||
+      msg.includes('could not find the table');
+    if (paysErr && !relationMissing) throw paysErr;
 
     let pays = null;
     let villes = [];
