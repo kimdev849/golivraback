@@ -455,10 +455,10 @@ async function assignLivreurToLivraison(db, livraisonId, livreurId, { source } =
   return data;
 }
 
-async function completeLivraisonAndSync(db, livraisonId, livreurId, proofPhotoUrl) {
+async function completeLivraisonAndSync(db, livraisonId, livreurId, proof) {
   const { completeLivraisonRow, isMissingColumnError } = require('./livraison-db');
   const now = new Date().toISOString();
-  const data = await completeLivraisonRow(db, livraisonId, livreurId, proofPhotoUrl);
+  const data = await completeLivraisonRow(db, livraisonId, livreurId, proof);
 
   if (data.sous_commande_id) {
     let scErr = null;

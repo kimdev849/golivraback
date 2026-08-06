@@ -45,6 +45,7 @@ function mapRestaurant(r, categorieNom) {
     frais_livraison: Number(r.frais_livraison ?? 1000),
     note_moyenne: r.note_moyenne != null ? Number(r.note_moyenne) : 0,
     nb_avis: r.nb_avis != null ? Number(r.nb_avis) : 0,
+    cree_le: r.created_at ?? null,
   };
 }
 
@@ -74,6 +75,7 @@ function mapBoutique(b, categorieNom) {
     frais_livraison: Number(b.frais_livraison ?? 1000),
     note_moyenne: b.note_moyenne != null ? Number(b.note_moyenne) : 0,
     nb_avis: b.nb_avis != null ? Number(b.nb_avis) : 0,
+    cree_le: b.created_at ?? null,
   };
 }
 
@@ -320,6 +322,7 @@ async function getEnterpriseById(req, res, next) {
       const cat = await loadCategoryName(db, 'restaurant', resto.categorie_id);
       const mapped = mapRestaurant(resto, cat);
       if (isPubliclyVisible(resto) || canBypassModerationCheck(req, resto)) {
+        await attachHorairesInfo(db, mapped, { kind: 'restaurant', id: resto.id });
         return res.json(mapped);
       }
       throw createHttpError(404, 'Commerce introuvable ou fermé.');
@@ -331,6 +334,7 @@ async function getEnterpriseById(req, res, next) {
       const cat = await loadCategoryName(db, 'boutique', bout.categorie_id);
       const mapped = mapBoutique(bout, cat);
       if (isPubliclyVisible(bout) || canBypassModerationCheck(req, bout)) {
+        await attachHorairesInfo(db, mapped, { kind: 'boutique', id: bout.id });
         return res.json(mapped);
       }
       throw createHttpError(404, 'Commerce introuvable ou fermé.');
@@ -379,14 +383,27 @@ async function patchEnterprise(req, res, next) {
             : String(row.adresse_quartier || '');
         const ligne1Clean = validators.sanitizeText(ligne1);
         const quartierClean = validators.sanitizeText(quartier);
-        if (!quartierClean) {
-          throw createHttpError(400, 'Le quartier (arrondissement) est obligatoire.');
-        }
-        if (ligne1Clean.length < 5) {
-          throw createHttpError(400, 'Adresse détaillée trop courte (minimum 5 caractères).');
-        }
-        if (/^[0-9\s]+$/.test(ligne1Clean)) {
-          throw createHttpError(400, 'Adresse invalide (pas uniquement des chiffres).');
+        // Adresse : OBLIGATOIRE pour un restaurant (livraison sur place), OPTIONNELLE pour une boutique (e-commerce).
+        // Une boutique sans adresse peut enregistrer sa fiche (nom, description, téléphone) sans bloquer.
+        const isRestaurant = table === 'restaurants';
+        if (isRestaurant) {
+          if (!quartierClean) {
+            throw createHttpError(400, 'Le quartier (arrondissement) est obligatoire.');
+          }
+          if (ligne1Clean.length < 5) {
+            throw createHttpError(400, 'Adresse détaillée trop courte (minimum 5 caractères).');
+          }
+          if (/^[0-9\s]+$/.test(ligne1Clean)) {
+            throw createHttpError(400, 'Adresse invalide (pas uniquement des chiffres).');
+          }
+        } else if (ligne1Clean.length > 0 || quartierClean.length > 0) {
+          // Boutique : si une adresse est renseignée, elle doit être exploitable, sinon on la laisse vide.
+          if (ligne1Clean && ligne1Clean.length < 5) {
+            throw createHttpError(400, 'Adresse détaillée trop courte (minimum 5 caractères).');
+          }
+          if (ligne1Clean && /^[0-9\s]+$/.test(ligne1Clean)) {
+            throw createHttpError(400, 'Adresse invalide (pas uniquement des chiffres).');
+          }
         }
         updates.adresse_ligne1 = ligne1Clean;
         updates.adresse_quartier = quartierClean;
@@ -454,6 +471,123 @@ async function patchEnterpriseSettings(_req, res, next) {
 }
 
 /** Statistiques détaillées (CA + engagement) pour le commerce du vendeur authentifié. */
+/** Enrichit la fiche publique d'un commerce avec ses horaires + statut d'ouverture. */
+async function attachHorairesInfo(db, mapped, { kind, id }) {
+  const { getEtablissementOuvertureInfo } = require('../services/horaires.service');
+  const prepMinutes =
+    kind === 'restaurant'
+      ? Number(mapped.delai_preparation_min ?? 20)
+      : Number(mapped.delai_livraison_min ?? 30);
+  const info = await getEtablissementOuvertureInfo(db, { kind, id, prepMinutes });
+  mapped.horaires = info.horaires;
+  mapped.est_ouvert_maintenant = info.ouvert;
+  mapped.peut_commander_maintenant = info.peut_commander;
+  mapped.accepte_commandes = info.accepte_commandes;
+  mapped.fermeture_plage = info.fermeture;
+  mapped.derniere_commande = info.derniere_commande;
+  mapped.message_fermeture = info.message_fermeture;
+  mapped.message_commande = info.message_commande;
+  mapped.prochaine_ouverture = info.prochaine_ouverture;
+}
+
+/** Trouve un établissement (resto ou boutique) et vérifie la propriété. */
+async function findOwnedEstablishment(db, enterpriseId, userId, allowAdmin) {
+  const { data: resto } = await db.from('restaurants').select('id, proprietaire_id').eq('id', enterpriseId).maybeSingle();
+  if (resto) {
+    if (resto.proprietaire_id !== userId && !allowAdmin) throw createHttpError(403, 'Action non autorisée.');
+    return { kind: 'restaurant', id: resto.id };
+  }
+  const { data: bout } = await db.from('boutiques').select('id, proprietaire_id').eq('id', enterpriseId).maybeSingle();
+  if (bout) {
+    if (bout.proprietaire_id !== userId && !allowAdmin) throw createHttpError(403, 'Action non autorisée.');
+    return { kind: 'boutique', id: bout.id };
+  }
+  throw createHttpError(404, 'Commerce introuvable.');
+}
+
+/** GET /api/enterprises/:id/horaires — horaires du commerce (propriétaire/admin). */
+async function getEnterpriseHoraires(req, res, next) {
+  try {
+    const db = getDb();
+    const { kind, id } = await findOwnedEstablishment(
+      db,
+      req.params.enterpriseId,
+      req.auth.userId,
+      req.auth.role === 'admin',
+    );
+    const { getEtablissementHoraires } = require('../services/horaires.service');
+    const horaires = await getEtablissementHoraires(db, { kind, id });
+    return res.json({ enterprise_id: id, type: kind, horaires });
+  } catch (error) {
+    return next(error);
+  }
+}
+
+function normalizeTimeValue(value) {
+  const s = String(value || '').trim();
+  const m = s.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (h > 23 || min > 59) return null;
+  return `${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}:00`;
+}
+
+/** PUT /api/enterprises/:id/horaires — remplace les horaires (propriétaire/admin). */
+async function putEnterpriseHoraires(req, res, next) {
+  try {
+    const db = getDb();
+    const { kind, id } = await findOwnedEstablishment(
+      db,
+      req.params.enterpriseId,
+      req.auth.userId,
+      req.auth.role === 'admin',
+    );
+    const raw = Array.isArray(req.body?.horaires) ? req.body.horaires : [];
+
+    const rows = [];
+    for (const item of raw) {
+      const jour = Number(item?.jour);
+      if (!Number.isInteger(jour) || jour < 0 || jour > 6) {
+        throw createHttpError(400, 'Jour invalide (0=Dimanche … 6=Samedi).');
+      }
+      const ouverture = normalizeTimeValue(item?.ouverture);
+      const fermeture = normalizeTimeValue(item?.fermeture);
+      if (!ouverture || !fermeture) {
+        throw createHttpError(400, 'Horaires invalides : indiquez ouverture et fermeture (HH:MM).');
+      }
+      rows.push({ jour, ouverture, fermeture });
+    }
+    if (rows.length > 60) {
+      throw createHttpError(400, 'Trop de plages horaires (maximum 60).');
+    }
+
+    const table = 'horaires_etablissements';
+    const col = kind === 'boutique' ? 'boutique_id' : 'restaurant_id';
+
+    // Remplacement complet : on efface puis on réinsère (transaction best-effort).
+    const { error: delErr } = await db.from(table).delete().eq(col, id);
+    if (delErr) throw delErr;
+
+    const inserted = [];
+    for (const row of rows) {
+      const { data, error } = await db
+        .from(table)
+        .insert({ [col]: id, jour: row.jour, ouverture: row.ouverture, fermeture: row.fermeture })
+        .select('id, jour, ouverture, fermeture')
+        .maybeSingle();
+      if (error) throw error;
+      inserted.push(data);
+    }
+
+    const { getEtablissementOuvertureInfo } = require('../services/horaires.service');
+    const info = await getEtablissementOuvertureInfo(db, { kind, id });
+    return res.json({ enterprise_id: id, type: kind, horaires: inserted, ...info });
+  } catch (error) {
+    return next(error);
+  }
+}
+
 async function getMyEnterpriseStats(req, res, next) {
   try {
     const { enterpriseId } = req.params;
@@ -487,6 +621,8 @@ module.exports = {
   getMyEnterprises,
   patchEnterprise,
   patchEnterpriseSettings,
+  getEnterpriseHoraires,
+  putEnterpriseHoraires,
   getMyEnterpriseStats,
   // Helpers réutilisables (atomicité register-vendor)
   initialModerationStatus,

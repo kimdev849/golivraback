@@ -12,31 +12,32 @@ const router = express.Router();
 router.get('/active', async (req, res, next) => {
   try {
     const db = getDb();
-    const now = new Date().toISOString();
     const villeId = req.query.ville_id || null;
 
-    // Campagnes avec dates dans la période courante
-    let { data: campaignsWithDates, error: err1 } = await db
+    // Campagnes marquées actives. On filtre ensuite sur la période en mémoire
+    // pour gérer proprement les dates nulles (début/fin optionnelles).
+    let { data: campaignsAll, error: err1 } = await db
       .from('marketing_campaigns')
       .select('*')
       .eq('est_actif', true)
-      .lte('date_debut', now)
-      .gte('date_fin', now)
       .order('created_at', { ascending: false });
 
     if (err1) throw err1;
 
-    // Campagnes sans date (toujours actives tant que est_actif = true)
-    let { data: campaignsNoDate, error: err2 } = await db
-      .from('marketing_campaigns')
-      .select('*')
-      .eq('est_actif', true)
-      .is('date_debut', null)
-      .order('created_at', { ascending: false });
+    // Une campagne est « en cours » si :
+    //  - pas encore commencée ? non (date_debut future)
+    //  - déjà terminée ? non (date_fin passée)
+    // Les dates vides sont considérées comme sans limite (toujours en cours).
+    const nowMs = Date.now();
+    const isOngoing = (c) => {
+      const debut = c.date_debut ? new Date(c.date_debut).getTime() : null;
+      const fin = c.date_fin ? new Date(c.date_fin).getTime() : null;
+      if (debut && debut > nowMs) return false;
+      if (fin && fin < nowMs) return false;
+      return true;
+    };
 
-    if (err2) throw err2;
-
-    let campaigns = [...(campaignsWithDates || []), ...(campaignsNoDate || [])];
+    let campaigns = (campaignsAll || []).filter(isOngoing);
 
     // Si filtre par ville, ne garder que les campagnes associées à cette ville
     if (villeId && campaigns.length > 0) {

@@ -198,6 +198,7 @@ async function mapVendorOrderRow(db, sc, commande, client) {
     statut: mapSousStatutToVendor(sc.statut),
     statut_brut: sc.statut,
     mode_livraison: sc.mode_livraison || 'golivra',
+    acceptation_limite_at: commande.acceptation_limite_at ?? null,
     establishmentType,
     establishmentId,
     clientNom: client?.nom || 'Client',
@@ -462,6 +463,19 @@ async function updateOrderStatus(req, res, next) {
 
     const { data: current } = await db.from('sous_commandes').select('statut, mode_livraison').eq('id', targetId).maybeSingle();
     if (!current) throw createHttpError(404, 'Commande introuvable');
+
+    // Délai d'acceptation : le commerce a 15 minutes après la création. Passé ce
+    // délai, la commande est automatiquement expirée et le client remboursé.
+    if (statut === 'acceptee') {
+      const { data: cmd } = await db.from('commandes').select('acceptation_limite_at').eq('id', orderId).maybeSingle();
+      const limite = cmd?.acceptation_limite_at ? new Date(cmd.acceptation_limite_at).getTime() : null;
+      if (limite != null && Date.now() > limite) {
+        throw createHttpError(
+          400,
+          'Le délai d\'acceptation (15 minutes) est dépassé : la commande a été annulée et le client remboursé.',
+        );
+      }
+    }
 
     if (statut === 'acceptee' && current.statut !== 'en_attente') {
       throw createHttpError(400, 'Cette commande ne peut plus être acceptée.');

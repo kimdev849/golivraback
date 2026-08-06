@@ -109,6 +109,41 @@ async function handle(db, payload, { rawBody, signature } = {}) {
     // Déclenche l'escrow
     try {
       const { escrows, totalBloqueFcfa } = await escrowService.hold(db, updated.commandeId, updated.id);
+
+      // Délai d'acceptation : les 15 minutes démarrent à la CONFIRMATION du
+      // paiement (spec : « Paiement Mobile Money → le restaurant a 15 min pour
+      // accepter »). On réarme la limite si la commande est encore en attente.
+      const { data: cmd } = await db
+        .from('commandes')
+        .select('statut, expiree_at')
+        .eq('id', updated.commandeId)
+        .maybeSingle();
+      const acceptation = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+      if (
+        cmd &&
+        cmd.expiree_at == null &&
+        (cmd.statut === 'en_attente' || cmd.statut === 'partiellement_acceptee')
+      ) {
+        await db
+          .from('commandes')
+          .update({ acceptation_limite_at: acceptation, updated_at: new Date().toISOString() })
+          .eq('id', updated.commandeId);
+      }
+
+      // Paiement reçu APRÈS l'expiration de la commande : l'argent ne doit pas
+      // rester bloqué sur un escrow d'une commande déjà remboursée/annulée.
+      if (cmd && (cmd.expiree_at != null || cmd.statut === 'remboursee' || cmd.statut === 'annulee')) {
+        try {
+          await escrowService.refundAllForCommande(db, updated.commandeId, {
+            motif: 'Paiement reçu après expiration de la commande',
+            payoutClient: false,
+          });
+          logWarn({ msg: 'escrow_refund_paid_after_expiry', paiementId: updated.id, commandeId: updated.commandeId });
+        } catch (err) {
+          logError({ msg: 'escrow_refund_paid_after_expiry', paiementId: updated.id, error: err.message });
+        }
+      }
+
       return { ok: true, paiement: updated, escrow: { escrows, totalBloqueFcfa } };
     } catch (err) {
       logError({ msg: 'escrow_hold_after_deposit', paiementId: updated.id, error: err.message });

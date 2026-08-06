@@ -221,6 +221,56 @@ CREATE TRIGGER trg_app_incidents_timeline
   FOR EACH ROW EXECUTE FUNCTION log_incident_event();
 
 -- ─────────────────────────────────────────────────────────────────────────────
+-- 9b. PREUVE DE LIVRAISON : méta-données (photo + GPS + heure + client)
+-- ─────────────────────────────────────────────────────────────────────────────
+-- La photo (proof_photo_url) est la preuve universelle exigée à la complétion
+-- d'une livraison (cas 1 client GoLivra ET cas 2 livraison externe). Les méta-
+-- données horodatées (GPS, heure, présence du client) servent uniquement en cas
+-- de litige ou pour l'administration.
+ALTER TABLE livraisons
+  ADD COLUMN IF NOT EXISTS proof_photo_url      TEXT,
+  ADD COLUMN IF NOT EXISTS proof_gps_lat        NUMERIC(10, 8),
+  ADD COLUMN IF NOT EXISTS proof_gps_lng        NUMERIC(11, 8),
+  ADD COLUMN IF NOT EXISTS proof_taken_at       TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS proof_client_present BOOLEAN;
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 9a. HORAIRES D'OUVERTURE + DÉLAI D'ACCEPTATION (15 min)
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS horaires_etablissements (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  restaurant_id UUID REFERENCES restaurants(id) ON DELETE CASCADE,
+  boutique_id   UUID REFERENCES boutiques(id)   ON DELETE CASCADE,
+  jour          INT  NOT NULL CHECK (jour BETWEEN 0 AND 6),
+  ouverture     TIME NOT NULL,
+  fermeture     TIME NOT NULL,
+  created_at    TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+  updated_at    TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT horaires_etablissements_ou_resto_ou_boutique CHECK (
+    (restaurant_id IS NOT NULL AND boutique_id IS NULL)
+    OR (restaurant_id IS NULL AND boutique_id IS NOT NULL)
+  )
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_horaires_etablissements_resto_unique
+  ON horaires_etablissements (restaurant_id, jour, ouverture, fermeture)
+  WHERE restaurant_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_horaires_etablissements_boutique_unique
+  ON horaires_etablissements (boutique_id, jour, ouverture, fermeture)
+  WHERE boutique_id IS NOT NULL;
+
+ALTER TABLE commandes
+  ADD COLUMN IF NOT EXISTS acceptation_limite_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS expiree_at TIMESTAMPTZ;
+
+ALTER TABLE sous_commandes
+  ADD COLUMN IF NOT EXISTS expiree_at TIMESTAMPTZ;
+
+CREATE INDEX IF NOT EXISTS idx_commandes_acceptation_limite
+  ON commandes (acceptation_limite_at)
+  WHERE statut IN ('en_attente', 'partiellement_acceptee');
+
+-- ─────────────────────────────────────────────────────────────────────────────
 -- 9. RAPPEL FINAL
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 1) Supabase → Project Settings → API → « Reload schema »

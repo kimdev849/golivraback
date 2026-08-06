@@ -112,13 +112,18 @@ async function mapCartToSegments(db, items) {
       nom = a?.nom || nom;
     }
 
-    seg.lines.push({
+    const line = {
       itemId: item.id,
       productId,
       nom,
       prixUnitaire: Number(item.prix_unitaire),
       quantite: Number(item.quantite),
-    });
+    };
+    // Anti-doublon défensif : si le même produit existe déjà dans le segment,
+    // la ligne la plus récente (dernier push) remplace l'ancienne.
+    const existingIdx = seg.lines.findIndex((l) => l.productId === productId);
+    if (existingIdx >= 0) seg.lines[existingIdx] = line;
+    else seg.lines.push(line);
   }
 
   return [...segmentMap.values()];
@@ -179,8 +184,19 @@ async function replaceCartFromSegments(db, userId, segments) {
     }
   }
 
-  if (rows.length > 0) {
-    const { error } = await db.from('panier_items').insert(rows);
+  // Anti-doublon : un même produit ne doit apparaître qu'une seule fois
+  // (garde la quantité maximale) avant insertion en base.
+  const seen = new Map();
+  for (const row of rows) {
+    const key = row.plat_id || row.article_id;
+    if (!key) continue;
+    const prev = seen.get(key);
+    if (!prev || row.quantite > prev.quantite) seen.set(key, row);
+  }
+  const deduped = [...seen.values()];
+
+  if (deduped.length > 0) {
+    const { error } = await db.from('panier_items').insert(deduped);
     if (error) throw error;
   }
 

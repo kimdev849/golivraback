@@ -137,6 +137,31 @@ async function initiatePayout({ payoutId, montantFcfa, currency = 'XAF', methode
   }
 }
 
+/**
+ * Initie un remboursement (refund) d'un dépôt PawaPay.
+ * L'argent est reversé automatiquement sur le numéro Mobile Money du payeur.
+ *
+ * @see https://docs.pawapay.io/#operation/initiateDepositRefund
+ */
+async function initiateRefund({ refundId, depositId, montantFcfa, motif = null, metadata = [] }) {
+  if (!depositId) return { ok: false, simulated: false, error: 'deposit_id_manquant' };
+  const payload = {
+    refundId,
+    depositId,
+    amount: String(Number(montantFcfa).toFixed(2)),
+    currency: 'XAF',
+    reason: String(motif || 'Commande non confirmée par le commerce').slice(0, 60),
+    metadata: metadata || [],
+  };
+  try {
+    const json = await httpJson(`/deposits/${encodeURIComponent(depositId)}/refunds`, payload);
+    return { ok: true, simulated: false, data: json };
+  } catch (err) {
+    if (!isLive()) return { ok: true, simulated: true, data: null };
+    return { ok: false, simulated: false, error: err.message, body: err.body };
+  }
+}
+
 // ── Helpers sandbox (import paresseux) ──────────────────────────────────────
 let _sandbox = null;
 function getSandbox() {
@@ -209,6 +234,7 @@ module.exports = {
   isLive,
   initiateDeposit,
   initiatePayout,
+  initiateRefund,
   getPayoutStatus,
   normalizePhone,
   countryToCorrespondent,

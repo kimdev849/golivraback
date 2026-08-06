@@ -182,6 +182,52 @@ async function notifySousCommandeStatusChange(db, sousCommandeId, statut) {
   }
 }
 
+/**
+ * Commande expirée : le commerce n'a pas accepté dans le délai de 15 minutes.
+ * Le client est informé que son remboursement est en cours (Mobile Money via
+ * PawaPay, ou solde GoLivra en repli), les vendeurs que la commande est annulée.
+ */
+async function notifyOrderExpired(db, commandeId, { remboursementEnCours = true } = {}) {
+  const { data: commande } = await db
+    .from('commandes')
+    .select('id, numero, client_id')
+    .eq('id', commandeId)
+    .maybeSingle();
+  if (!commande) return;
+
+  await notifyClient(db, commande.client_id, {
+    type: 'commande_expiree',
+    titre: 'Commande expirée',
+    corps: remboursementEnCours
+      ? "Le restaurant n'a pas confirmé votre commande. Votre remboursement est en cours."
+      : "Le restaurant n'a pas confirmé votre commande. Elle a été annulée.",
+    data: { commande_id: commandeId, action: 'open_orders' },
+  });
+
+  // Vendeurs concernés : la commande liée à leur commerce a expiré.
+  const { data: sous } = await db
+    .from('sous_commandes')
+    .select('id, restaurant_id, boutique_id')
+    .eq('commande_id', commandeId);
+  const ownerIds = new Set();
+  for (const sc of sous || []) {
+    if (sc.restaurant_id) {
+      const { data: r } = await db.from('restaurants').select('proprietaire_id').eq('id', sc.restaurant_id).maybeSingle();
+      if (r?.proprietaire_id) ownerIds.add(r.proprietaire_id);
+    }
+    if (sc.boutique_id) {
+      const { data: b } = await db.from('boutiques').select('proprietaire_id').eq('id', sc.boutique_id).maybeSingle();
+      if (b?.proprietaire_id) ownerIds.add(b.proprietaire_id);
+    }
+  }
+  await notifyVendors(db, [...ownerIds], {
+    type: 'commande_expiree',
+    titre: 'Commande expirée',
+    corps: 'Le délai d\'acceptation (15 min) est dépassé : la commande a été annulée et le client remboursé.',
+    data: { commande_id: commandeId, action: 'vendor_orders' },
+  });
+}
+
 async function notifyDeliveryAccepted(db, livraisonId) {
   const ctx = await getLivraisonParties(db, livraisonId);
   if (!ctx?.parties) return;
@@ -291,6 +337,7 @@ module.exports = {
   notifyPaymentConfirmed,
   notifyPromoApplied,
   notifySousCommandeStatusChange,
+  notifyOrderExpired,
   notifyDeliveryAccepted,
   notifyDeliveryStep,
   notifyDeliveryCompleted,

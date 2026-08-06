@@ -7,6 +7,8 @@ const {
   getMyEnterprises,
   patchEnterprise,
   patchEnterpriseSettings,
+  getEnterpriseHoraires,
+  putEnterpriseHoraires,
   getMyEnterpriseStats,
 } = require('../controllers/enterprise.controller');
 const { authMiddleware, optionalAuthMiddleware } = require('../middlewares/auth.middleware');
@@ -34,6 +36,18 @@ router.patch(
   authMiddleware,
   requireRoles(['restaurateur', 'commercant', 'admin']),
   patchEnterpriseSettings,
+);
+router.get(
+  '/:enterpriseId/horaires',
+  authMiddleware,
+  requireRoles(['restaurateur', 'commercant', 'admin']),
+  getEnterpriseHoraires,
+);
+router.put(
+  '/:enterpriseId/horaires',
+  authMiddleware,
+  requireRoles(['restaurateur', 'commercant', 'admin']),
+  putEnterpriseHoraires,
 );
 router.get('/:enterpriseId', optionalAuthMiddleware, getEnterpriseById);
 router.post('/', authMiddleware, requireRoles(['restaurateur', 'commercant', 'admin']), createEnterprise);

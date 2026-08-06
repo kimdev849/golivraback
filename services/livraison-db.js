@@ -78,27 +78,49 @@ async function advanceLivraisonStatut(db, livraisonId, livreurId, nextStatut, ex
   return data;
 }
 
-async function completeLivraisonRow(db, livraisonId, livreurId, proofPhotoUrl) {
+/**
+ * Marque la livraison comme livrée avec la preuve de livraison complète.
+ *
+ * @param {object} proof - { photoUrl, gpsLat, gpsLng, takenAt, clientPresent }
+ *   Les colonnes non migrées sont retirées automatiquement par updateLivraisonRow.
+ */
+async function completeLivraisonRow(db, livraisonId, livreurId, proof) {
   const now = new Date().toISOString();
+  const meta = {
+    ...(proof?.photoUrl ? { proof_photo_url: String(proof.photoUrl) } : {}),
+    ...(proof?.gpsLat != null && Number.isFinite(Number(proof.gpsLat))
+      ? { proof_gps_lat: Number(proof.gpsLat) }
+      : {}),
+    ...(proof?.gpsLng != null && Number.isFinite(Number(proof.gpsLng))
+      ? { proof_gps_lng: Number(proof.gpsLng) }
+      : {}),
+    ...(proof?.takenAt ? { proof_taken_at: proof.takenAt } : {}),
+    ...(typeof proof?.clientPresent === 'boolean' ? { proof_client_present: proof.clientPresent } : {}),
+  };
 
-  // On essaie d'abord avec proof_photo_url...
-  if (proofPhotoUrl) {
+  // On essaie d'abord avec la preuve (photo + méta-données)...
+  if (meta.proof_photo_url) {
     try {
       const photoPatches = [
-        { statut: 'livree', livree_at: now, livre_le: now, updated_at: now, proof_photo_url: proofPhotoUrl },
-        { statut: 'livree', livree_at: now, updated_at: now, proof_photo_url: proofPhotoUrl },
-        { statut: 'livree', livree_at: now, proof_photo_url: proofPhotoUrl },
-        { statut: 'livree', livre_le: now, proof_photo_url: proofPhotoUrl },
-        { statut: 'livree', proof_photo_url: proofPhotoUrl },
+        { statut: 'livree', livree_at: now, livre_le: now, updated_at: now, ...meta },
+        { statut: 'livree', livree_at: now, updated_at: now, ...meta },
+        { statut: 'livree', livree_at: now, ...meta },
+        { statut: 'livree', livre_le: now, ...meta },
+        { statut: 'livree', ...meta },
       ];
-      return await updateLivraisonForCourier(db, livraisonId, livreurId, photoPatches);
+      const data = await updateLivraisonForCourier(db, livraisonId, livreurId, photoPatches);
+      if (data) return data;
     } catch (photoErr) {
-      console.warn('[livraison-db] proof_photo_url non sauvegardée (colonne absente ou permissions) :', photoErr?.message || photoErr);
-      // Fall through : on marque la livraison comme livrée sans la photo
+      // La preuve est le verrou de l'escrow : si la sauvegarde échoue pour une
+      // vraie raison (permissions RLS, réseau…), on NE complète PAS sans preuve.
+      // Seule tolérance : colonnes de la preuve pas encore migrées.
+      if (!isMissingColumnError(photoErr)) throw photoErr;
+      console.warn('[livraison-db] colonnes preuve non migrées, complétion sans preuve :', photoErr?.message || photoErr);
+      // Fall through : on marque la livraison comme livrée sans la preuve (migration uniquement)
     }
   }
 
-  // Fallback sans proof_photo_url (colonne pas encore migrée ou RLS insuffisant)
+  // Fallback sans preuve (colonnes pas encore migrées ou RLS insuffisant)
   const data = await updateLivraisonForCourier(db, livraisonId, livreurId, [
     { statut: 'livree', livree_at: now, livre_le: now, updated_at: now },
     { statut: 'livree', livree_at: now, updated_at: now },

@@ -1,5 +1,10 @@
 const { createHttpError } = require('../utils/http');
 
+/** Retire les clés `undefined` (le client supabase les ignorerait sinon, on rend le comportement explicite). */
+function definedFields(fields) {
+  return Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined));
+}
+
 function mapAddress(row) {
   if (!row) return null;
   return {
@@ -40,6 +45,15 @@ function validateAddressBody(body, { requireAll = true } = {}) {
   const villeId = typeof body.ville_id === 'string' && body.ville_id.trim() ? body.ville_id.trim() : null;
   const arrondissementId = typeof body.arrondissement_id === 'string' && body.arrondissement_id.trim() ? body.arrondissement_id.trim() : null;
 
+  // GPS (optionnel) : `undefined` = ne pas toucher la colonne (les appels
+  // supabase ignorent les clés undefined, ce qui préserve le GPS existant).
+  const latitude = typeof body.latitude === 'number' && Number.isFinite(body.latitude) && Math.abs(body.latitude) <= 90
+    ? Number(body.latitude.toFixed(8))
+    : undefined;
+  const longitude = typeof body.longitude === 'number' && Number.isFinite(body.longitude) && Math.abs(body.longitude) <= 180
+    ? Number(body.longitude.toFixed(8))
+    : undefined;
+
   if (requireAll) {
     if (!quartier) throw createHttpError(400, 'Le quartier est obligatoire.');
     if (!ligne1 || ligne1.length < 5) {
@@ -64,8 +78,8 @@ function validateAddressBody(body, { requireAll = true } = {}) {
     pays_id: paysId,
     ville_id: villeId,
     arrondissement_id: arrondissementId,
-    latitude: null,
-    longitude: null,
+    latitude,
+    longitude,
     instructions: instructions || null,
     point_reperes: point_reperes || null,
     est_principale: body.est_principale === true,
@@ -123,11 +137,11 @@ async function createUserAddress(db, userId, body) {
 
   const { data, error } = await db
     .from('adresses')
-    .insert({
+    .insert(definedFields({
       utilisateur_id: userId,
       ...fields,
       est_principale: makePrincipal,
-    })
+    }))
     .select('*')
     .single();
   if (error) throw error;
@@ -141,7 +155,7 @@ async function updateUserAddress(db, userId, addressId, body) {
 
   const { data, error } = await db
     .from('adresses')
-    .update({ ...fields, updated_at: new Date().toISOString() })
+    .update(definedFields({ ...fields, updated_at: new Date().toISOString() }))
     .eq('id', addressId)
     .eq('utilisateur_id', userId)
     .select('*')

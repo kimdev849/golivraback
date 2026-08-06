@@ -118,6 +118,22 @@ async function mapCourierMissionRow(db, liv) {
   };
 }
 
+const PROOF_FIELDS = [
+  'proof_photo_url',
+  'proof_gps_lat',
+  'proof_gps_lng',
+  'proof_taken_at',
+  'proof_client_present',
+];
+
+/** Retire les champs de preuve de livraison (photo, GPS…) d'une ligne livraison. */
+function stripProof(row) {
+  if (!row || typeof row !== 'object') return row;
+  const copy = { ...row };
+  for (const field of PROOF_FIELDS) delete copy[field];
+  return copy;
+}
+
 async function getDeliveryStatus(req, res, next) {
   try {
     const { orderId } = req.params;
@@ -151,12 +167,15 @@ async function getDeliveryStatus(req, res, next) {
     const { data: deliveries } = await db.from('livraisons').select('*').in('sous_commande_id', scIds);
 
     const delivery = deliveries && deliveries[0] ? deliveries[0] : null;
+    // La preuve (photo, GPS…) n'est visible qu'en cas de litige ou par l'admin :
+    // elle est masquée côté client.
+    const hideProof = role === 'client';
 
     return res.json({
       orderId: order.id,
       orderStatus: order.statut,
-      delivery,
-      deliveries: deliveries || [],
+      delivery: hideProof ? stripProof(delivery) : delivery,
+      deliveries: hideProof ? (deliveries || []).map(stripProof) : deliveries || [],
       createdAt: order.created_at,
     });
   } catch (error) {
@@ -371,7 +390,19 @@ async function getDeliveryDetails(req, res, next) {
         adresse_retrait: adresseRetrait || '',
         client_nom: livraison.client_nom || client?.nom || null,
         client_telephone: livraison.client_telephone || client?.telephone || null,
-        proof_photo_url: livraison.proof_photo_url || null,
+        proof_photo_url: role === 'client' ? null : livraison.proof_photo_url || null,
+        // Preuve complète (photo + GPS + heure + présence) :
+        // consultable uniquement en cas de litige ou par l'administration.
+        proof:
+          role === 'client'
+            ? null
+            : {
+                photoUrl: livraison.proof_photo_url || null,
+                gpsLat: livraison.proof_gps_lat != null ? Number(livraison.proof_gps_lat) : null,
+                gpsLng: livraison.proof_gps_lng != null ? Number(livraison.proof_gps_lng) : null,
+                takenAt: livraison.proof_taken_at || null,
+                clientPresent: livraison.proof_client_present ?? null,
+              },
       },
       livreur: livreurRow
         ? {
@@ -748,10 +779,32 @@ async function completeDelivery(req, res, next) {
     const { deliveryId } = req.params;
     const db = getDb();
     const courierId = await getLivreurIdForUser(db, req.auth.userId);
-    const proofPhotoUrl = typeof req.body?.proofPhotoUrl === 'string' ? req.body.proofPhotoUrl.trim() : undefined;
+
+    // Preuve de livraison : la photo est obligatoire (universelle, cas 1 et cas 2).
+    // Tant qu'elle n'existe pas, la livraison ne passe pas à « livrée » et l'escrow
+    // reste bloqué (settleDeliveryFeesOnComplete n'est appelé qu'à la complétion).
+    const proofPhotoUrl = typeof req.body?.proofPhotoUrl === 'string' ? req.body.proofPhotoUrl.trim() : '';
+    if (!proofPhotoUrl || !/^https?:\/\//i.test(proofPhotoUrl)) {
+      throw createHttpError(400, 'Une photo de preuve valide est requise pour valider la livraison.');
+    }
+
+    const proof = {
+      photoUrl: proofPhotoUrl,
+      gpsLat:
+        typeof req.body?.proofLatitude === 'number' && Number.isFinite(req.body.proofLatitude)
+          ? req.body.proofLatitude
+          : undefined,
+      gpsLng:
+        typeof req.body?.proofLongitude === 'number' && Number.isFinite(req.body.proofLongitude)
+          ? req.body.proofLongitude
+          : undefined,
+      takenAt: typeof req.body?.proofTakenAt === 'string' ? req.body.proofTakenAt : undefined,
+      clientPresent:
+        typeof req.body?.proofClientPresent === 'boolean' ? req.body.proofClientPresent : undefined,
+    };
 
     const { completeLivraisonAndSync } = require('../services/dispatch.service');
-    const data = await completeLivraisonAndSync(db, deliveryId, courierId, proofPhotoUrl);
+    const data = await completeLivraisonAndSync(db, deliveryId, courierId, proof);
     try {
       return res.json(await mapCourierMissionRow(db, data));
     } catch (mapErr) {

@@ -225,6 +225,17 @@ async function createOrderFromPayload(db, clientId, payload) {
       throw createHttpError(403, `${ent.nom || 'Commerce'} : temporairement fermé.`);
     }
 
+    // Horaires d'ouverture (strict) + délai de préparation : la commande n'est
+    // possible que si le commerce est ouvert ET que la préparation peut se
+    // terminer avant la fermeture (ex. fermeture 23h, préparation 25 min →
+    // dernière commande possible 22h35).
+    const { assertEtablissementOuvert } = require('./horaires.service');
+    const prepMinutes =
+      kind === 'restaurant'
+        ? Number(ent.delai_preparation_min ?? 20)
+        : Number(ent.delai_livraison_min ?? 30);
+    await assertEtablissementOuvert(db, { kind, id: eid, nom: ent.nom || null, prepMinutes });
+
     const mode = resolveModeLivraison(ent);
     const { lines, sousTotal } = await buildLinesForSegment(db, kind, eid, segArticles);
     let frais = 0;
@@ -294,6 +305,10 @@ async function createOrderFromPayload(db, clientId, payload) {
     return { commande: full, sousCommandes: scs || [], dejaExistante: true };
   }
 
+  // Le commerce a 15 minutes pour accepter la commande : passé ce délai, un
+  // job expire la commande et déclenche le remboursement automatique du client.
+  const acceptationLimite = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+
   const { data: commande, error: cErr } = await db
     .from('commandes')
     .insert({
@@ -301,6 +316,7 @@ async function createOrderFromPayload(db, clientId, payload) {
       adresse_livraison_id: adresseLivraisonId,
       adresse_livraison_snapshot: addrSnap,
       statut: 'en_attente',
+      acceptation_limite_at: acceptationLimite,
       sous_total: orderSubtotal,
       frais_livraison_total: deliveryTotal,
       remise_totale: remiseTotale,
@@ -389,16 +405,23 @@ async function syncCommandeStatutFromSousCommandes(db, commandeId) {
   const statuts = list.map((s) => s.statut);
   let next = 'en_attente';
 
-  if (statuts.every((s) => s === 'livree')) next = 'livree';
-  else if (statuts.every((s) => s === 'annulee' || s === 'refusee')) next = 'annulee';
+  // Toutes les sous-commandes ont expiré (non acceptées dans le délai) : la
+  // commande est remboursée, c'est ce statut que voit le client.
+  if (statuts.every((s) => s === 'remboursee')) next = 'remboursee';
+  else if (statuts.every((s) => s === 'livree')) next = 'livree';
+  // Toutes les sous-commandes sont à l'état terminal annulé (refusées, annulées
+  // ou expirées/remboursées) → la commande est annulée (cas mixte inclus).
+  else if (statuts.every((s) => s === 'annulee' || s === 'refusee' || s === 'remboursee')) next = 'annulee';
   else if (statuts.some((s) => s === 'livree')) next = 'partiellement_livree';
   else if (statuts.some((s) => s === 'collectee' || s === 'prete')) next = 'en_livraison';
   else if (statuts.some((s) => s === 'en_preparation')) next = 'en_preparation';
   else if (statuts.every((s) => s === 'acceptee')) next = 'acceptee';
   else if (statuts.some((s) => s === 'acceptee')) next = 'partiellement_acceptee';
 
-  const patch = { statut: next, updated_at: new Date().toISOString() };
-  if (next === 'livree') patch.livree_at = new Date().toISOString();
+  const now = new Date().toISOString();
+  const patch = { statut: next, updated_at: now };
+  if (next === 'livree') patch.livree_at = now;
+  if (next === 'remboursee') patch.expiree_at = now;
 
   await db.from('commandes').update(patch).eq('id', commandeId);
 }
@@ -426,6 +449,9 @@ async function updateSousCommandeStatut(db, sousCommandeId, statut, extra = {}) 
   if (statut === 'refusee') {
     patch.refusee_at = now;
     if (extra.raison_refus) patch.raison_refus = extra.raison_refus;
+  }
+  if (statut === 'remboursee') {
+    patch.expiree_at = now;
   }
   if (statut === 'prete') {
     patch.prete_at = now;
