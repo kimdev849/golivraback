@@ -33,11 +33,80 @@ async function selectActiveEstablishments(db, table, { villeId } = {}) {
   const full = await attempt([...base, ...optional], true);
   if (!full.error) return full.data || [];
   if (optional.some((c) => isMissingColumnError(full.error, c))) {
-    const baseRes = await attempt(base, false);
-    if (!baseRes.error) return baseRes.data || [];
-    throw baseRes.error;
+    // On conserve le filtre ville s'il était demandé et que la colonne existe
+    // (sinon on renverrait des commerces hors de la ville), avec repli
+    // « meilleur effort » sans filtre quand la colonne ville_id manque.
+    const villeMissing = isMissingColumnError(full.error, 'ville_id');
+    if (!villeMissing && villeId) {
+      const baseRes = await attempt(base, true);
+      if (!baseRes.error) return baseRes.data || [];
+    }
+    const noVille = await attempt(base, false);
+    if (!noVille.error) return noVille.data || [];
+    throw full.error;
   }
   throw full.error;
+}
+
+// PostgREST limite la longueur d'URL de requête (~8 Ko) : un filtre
+// `in.(id1,id2,…)` avec des centaines d'ids fait exploser l'URL → 500
+// systématique sur le feed quand la plateforme grossit. On découpe donc
+// les listes d'ids en lots et on fusionne les résultats.
+const IN_CHUNK_SIZE = 60;
+
+async function fetchRowsByIdsInChunks(db, table, column, ids, applyQuery) {
+  if (!Array.isArray(ids) || !ids.length) return [];
+  const chunks = [];
+  for (let i = 0; i < ids.length; i += IN_CHUNK_SIZE) {
+    chunks.push(ids.slice(i, i + IN_CHUNK_SIZE));
+  }
+  const results = await Promise.all(
+    chunks.map(async (chunk) => {
+      let q = db.from(table).select('*').in(column, chunk);
+      if (typeof applyQuery === 'function') q = applyQuery(q);
+      const { data, error } = await q;
+      if (error) throw error;
+      return data || [];
+    }),
+  );
+  // Fusion sans doublons + tri stable par nom (les requêtes parallèles ne
+  // garantissent pas l'ordre du `order('nom')` serveur).
+  const seen = new Set();
+  const merged = [];
+  for (const rows of results) {
+    for (const row of rows) {
+      if (!seen.has(row.id)) {
+        seen.add(row.id);
+        merged.push(row);
+      }
+    }
+  }
+  return merged.sort((a, b) => String(a.nom ?? '').localeCompare(String(b.nom ?? ''), 'fr', { sensitivity: 'base' }));
+}
+
+/**
+ * Enregistre un échec de sous-requête du feed (dégradation gracieuse) :
+ * le feed continue de répondre 200 avec les données disponibles, et
+ * l'incident est tout de même tracé avec le vrai message pour le suivi.
+ */
+function recordFeedSubError(req, part, error) {
+  const { recordIncidentAsync, incidentFromHttpError } = require('../services/observability.service');
+  console.error(`[Feed] ${part} sub-query failed (requestId=${req?.requestId || 'unknown'}):`, error?.message || error);
+  try {
+    recordIncidentAsync(
+      incidentFromHttpError(
+        { ...error, status: 500, message: `[Feed] ${part} : ${error?.message || String(error)}` },
+        req,
+        {
+          title: `[API dégradé] ${req?.method || 'GET'} ${req?.originalUrl || 'feed'} — ${part}`,
+          source: 'backend',
+          metadata: { part, code: error?.code || null, details: error?.details || null },
+        },
+      ),
+    );
+  } catch {
+    // L'observabilité ne doit jamais faire échouer la réponse.
+  }
 }
 
 async function searchActiveEstablishments(db, table, pattern, limit) {
@@ -403,14 +472,18 @@ async function listProductFeed(req, res, next) {
       const restById = new Map((restaurants || []).map((r) => [r.id, r]));
       const restIds = [...restById.keys()];
       if (restIds.length) {
-        let q = db.from('plats').select('*').in('restaurant_id', restIds).order('nom');
-        if (onlyPromo) q = q.not('prix_promo', 'is', null);
-        const { data, error } = await q;
-        if (error) throw error;
-        for (const p of data || []) {
-          const rest = restById.get(p.restaurant_id);
-          if (!rest) continue;
-          out.push({ ...mapPlatToProduct(p, p.restaurant_id), enterprise_id: p.restaurant_id, enterprise_nom: rest.nom || null, enterprise_type: 'restaurant', enterprise_image_url: enterpriseImageUrl(rest) });
+        try {
+          const rows = await fetchRowsByIdsInChunks(db, 'plats', 'restaurant_id', restIds, (q) =>
+            onlyPromo ? q.not('prix_promo', 'is', null) : q,
+          );
+          for (const p of rows) {
+            const rest = restById.get(p.restaurant_id);
+            if (!rest) continue;
+            out.push({ ...mapPlatToProduct(p, p.restaurant_id), enterprise_id: p.restaurant_id, enterprise_nom: rest.nom || null, enterprise_type: 'restaurant', enterprise_image_url: enterpriseImageUrl(rest) });
+          }
+        } catch (subErr) {
+          // Un échec sur les plats ne doit pas faire planter tout le feed.
+          recordFeedSubError(req, 'plats', subErr);
         }
       }
     }
@@ -419,14 +492,18 @@ async function listProductFeed(req, res, next) {
       const boutById = new Map((boutiques || []).map((b) => [b.id, b]));
       const boutIds = [...boutById.keys()];
       if (boutIds.length) {
-        let q = db.from('articles').select('*').in('boutique_id', boutIds).order('nom');
-        if (onlyPromo) q = q.not('prix_promo', 'is', null);
-        const { data, error } = await q;
-        if (error) throw error;
-        for (const a of data || []) {
-          const bou = boutById.get(a.boutique_id);
-          if (!bou) continue;
-          out.push({ ...mapArticleToProduct(a, a.boutique_id), enterprise_id: a.boutique_id, enterprise_nom: bou.nom || null, enterprise_type: 'boutique', enterprise_image_url: enterpriseImageUrl(bou) });
+        try {
+          const rows = await fetchRowsByIdsInChunks(db, 'articles', 'boutique_id', boutIds, (q) =>
+            onlyPromo ? q.not('prix_promo', 'is', null) : q,
+          );
+          for (const a of rows) {
+            const bou = boutById.get(a.boutique_id);
+            if (!bou) continue;
+            out.push({ ...mapArticleToProduct(a, a.boutique_id), enterprise_id: a.boutique_id, enterprise_nom: bou.nom || null, enterprise_type: 'boutique', enterprise_image_url: enterpriseImageUrl(bou) });
+          }
+        } catch (subErr) {
+          // Un échec sur les articles ne doit pas faire planter tout le feed.
+          recordFeedSubError(req, 'articles', subErr);
         }
       }
     }
@@ -474,9 +551,15 @@ async function searchCatalog(req, res, next) {
       const restById = new Map((restaurants || []).map((r) => [r.id, r]));
       const restIds = [...restById.keys()];
       if (restIds.length) {
-        const { data, error } = await db.from('plats').select('*').in('restaurant_id', restIds).or(`nom.ilike.${pattern},description.ilike.${pattern}`).limit(limit);
-        if (error) throw error;
-        for (const p of data || []) {
+        let platsRows = [];
+        try {
+          platsRows = await fetchRowsByIdsInChunks(db, 'plats', 'restaurant_id', restIds, (q) =>
+            q.or(`nom.ilike.${pattern},description.ilike.${pattern}`).limit(limit),
+          );
+        } catch (subErr) {
+          recordFeedSubError(req, 'search_plats', subErr);
+        }
+        for (const p of platsRows) {
           const rest = restById.get(p.restaurant_id);
           if (!rest) continue;
           products.push({ ...mapPlatToProduct(p, p.restaurant_id), enterprise_id: p.restaurant_id, enterprise_nom: rest.nom || null, enterprise_type: 'restaurant', enterprise_image_url: enterpriseImageUrl(rest) });
@@ -488,9 +571,15 @@ async function searchCatalog(req, res, next) {
       const boutById = new Map((boutiques || []).map((b) => [b.id, b]));
       const boutIds = [...boutById.keys()];
       if (boutIds.length) {
-        const { data, error } = await db.from('articles').select('*').in('boutique_id', boutIds).or(`nom.ilike.${pattern},description.ilike.${pattern}`).limit(limit);
-        if (error) throw error;
-        for (const a of data || []) {
+        let articlesRows = [];
+        try {
+          articlesRows = await fetchRowsByIdsInChunks(db, 'articles', 'boutique_id', boutIds, (q) =>
+            q.or(`nom.ilike.${pattern},description.ilike.${pattern}`).limit(limit),
+          );
+        } catch (subErr) {
+          recordFeedSubError(req, 'search_articles', subErr);
+        }
+        for (const a of articlesRows) {
           const bou = boutById.get(a.boutique_id);
           if (!bou) continue;
           products.push({ ...mapArticleToProduct(a, a.boutique_id), enterprise_id: a.boutique_id, enterprise_nom: bou.nom || null, enterprise_type: 'boutique', enterprise_image_url: enterpriseImageUrl(bou) });

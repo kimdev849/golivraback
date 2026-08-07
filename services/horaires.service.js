@@ -29,6 +29,11 @@ function toMinutes(value) {
   return Number(m[1]) * 60 + Number(m[2]);
 }
 
+/** Capitalise la première lettre (« cette boutique » → « Cette boutique »). */
+function capitalizeFirst(s) {
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+}
+
 /** Minutes → "HH:MM" (boucle sur 24 h pour les plages qui chevauchent minuit). */
 function minutesToTime(total) {
   const m = Math.max(0, Math.floor(Number(total) || 0));
@@ -79,7 +84,7 @@ async function getEtablissementHoraires(db, { kind, id }) {
  * @returns {{ ouvert: boolean, peutCommander: boolean, fermeture: string|null,
  *            derniereCommande: string|null, message: string|null }}
  */
-function computeOrderFeasibility(horaires, prepMinutes = 0, now = new Date()) {
+function computeOrderFeasibility(horaires, prepMinutes = 0, now = new Date(), typeNom = 'le commerce') {
   const list = Array.isArray(horaires) ? horaires : [];
   if (list.length === 0) {
     return {
@@ -124,7 +129,7 @@ function computeOrderFeasibility(horaires, prepMinutes = 0, now = new Date()) {
     derniereCommande: formatHour(minutesToTime(cutoff)),
     message: peutCommander
       ? null
-      : `Il est trop tard pour commander : le commerce ferme à ${formatHour(active.fermeture)} et la préparation prend ${prep} min.`,
+      : `Il est trop tard pour commander : ${typeNom} ferme à ${formatHour(active.fermeture)} et la préparation prend ${prep} min.`,
   };
 }
 
@@ -181,8 +186,10 @@ function computeOuverture(horaires, now = new Date()) {
   return { ouvert, prochaineOuverture: prochaine, prochaineLabel };
 }
 
-function typeLabel(kind) {
-  return kind === 'boutique' ? 'boutique' : 'restaurant';
+function typeRef(kind) {
+  // Référence grammaticale complète du commerce (article correct) :
+  // « cette boutique » (féminin) / « ce restaurant » (masculin).
+  return kind === 'boutique' ? 'cette boutique' : 'ce restaurant';
 }
 
 /**
@@ -199,7 +206,7 @@ function typeLabel(kind) {
  *   prochaine_ouverture: string|null }>}
  */
 async function getEtablissementOuvertureInfo(db, { kind, id, prepMinutes = 0 }) {
-  const typeNom = typeLabel(kind);
+  const typeNom = typeRef(kind);
   const horaires = await getEtablissementHoraires(db, { kind, id });
 
   if (horaires.length === 0) {
@@ -210,13 +217,13 @@ async function getEtablissementOuvertureInfo(db, { kind, id, prepMinutes = 0 }) 
       accepte_commandes: false,
       fermeture: null,
       derniere_commande: null,
-      message_fermeture: `Ce ${typeNom} n'a pas encore défini ses horaires d'ouverture.`,
+      message_fermeture: `${capitalizeFirst(typeNom)} n'a pas encore défini ses horaires d'ouverture.`,
       message_commande: null,
       prochaine_ouverture: null,
     };
   }
 
-  const feas = computeOrderFeasibility(horaires, prepMinutes);
+  const feas = computeOrderFeasibility(horaires, prepMinutes, undefined, typeNom);
   const { prochaineOuverture, prochaineLabel } = computeOuverture(horaires);
   const suite =
     prochaineOuverture && prochaineLabel
@@ -230,7 +237,9 @@ async function getEtablissementOuvertureInfo(db, { kind, id, prepMinutes = 0 }) 
     accepte_commandes: true,
     fermeture: feas.fermeture,
     derniere_commande: feas.derniereCommande,
-    message_fermeture: feas.ouvert ? null : `Ce ${typeNom} est actuellement fermé.${suite}`,
+    message_fermeture: feas.ouvert
+      ? null
+      : `${capitalizeFirst(typeNom)} est actuellement fermé${kind === 'boutique' ? 'e' : ''}.${suite}`,
     message_commande: feas.ouvert && !feas.peutCommander ? feas.message : null,
     prochaine_ouverture: prochaineOuverture ? formatHour(prochaineOuverture) : null,
   };

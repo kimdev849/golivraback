@@ -4,6 +4,7 @@ const observability = require('../services/observability.service');
 const endpointHealth = require('../services/endpoint-health.service');
 const alerting = require('../services/alerting.service');
 const { getDb } = require('../config/db');
+const controlCenter = require('../services/control-center.service');
 
 // -----------------------------------------------------------------------------
 // Ingestion (POST /api/observability/report) — inchangé
@@ -232,6 +233,18 @@ async function getEndpointHealth(req, res, next) {
   }
 }
 
+// Vue consolidée « centre de contrôle » : services + technique + business +
+// acteurs + mobile + incidents en un seul appel.
+async function getControlCenter(req, res, next) {
+  try {
+    const windowMin = Math.min(Math.max(Number(req.query.window_min) || 60, 5), 1440);
+    const overview = await controlCenter.getControlCenterOverview({ windowMin });
+    return res.json(overview);
+  } catch (err) {
+    return next(err);
+  }
+}
+
 async function postPersistHourlySnapshot(req, res, next) {
   try {
     const result = await endpointHealth.persistHourlySnapshot();
@@ -440,6 +453,7 @@ module.exports = {
   postReanalyzeStack,
   getObservabilityDashboard,
   getEndpointHealth,
+  getControlCenter,
   postPersistHourlySnapshot,
   listAlertChannels,
   createAlertChannel,

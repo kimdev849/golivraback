@@ -271,8 +271,12 @@ async function listAllEnterprises(req, res, next) {
 }
 
 async function listEnterprisesPending(req, res, next) {
-  req.query = { ...req.query, status: 'en_attente' };
-  return listAllEnterprises(req, res, next);
+  // Express 5 : req.query est un getter en lecture seule (l'assignation
+  // échoue silencieusement). On construit une copie de requête avec un
+  // objet query simple pour forcer le filtre statut='en_attente'.
+  const { type, q } = req.query || {};
+  const pendingReq = { ...req, query: { type, q, status: 'en_attente' } };
+  return listAllEnterprises(pendingReq, res, next);
 }
 
 async function getEnterpriseAdmin(req, res, next) {
@@ -462,9 +466,34 @@ async function approveUser(req, res, next) {
 
     const { data: roleRow } = await db.from('roles').select('nom').eq('id', user.role_id).maybeSingle();
 
+    // Cohérence des deux parcours de validation : approuver le compte d'un
+    // marchand (page « Comptes en attente ») active aussi ses commerces en
+    // attente, comme le fait la validation depuis la fiche commerce.
+    const roleNom = roleRow?.nom ?? null;
+    if (roleNom === 'restaurateur' || roleNom === 'commercant') {
+      const patch = {
+        statut: 'active',
+        est_ouvert: true,
+        approuve_par: req.auth.userId,
+        approuve_at: new Date().toISOString(),
+        note_moderation: null,
+        updated_at: new Date().toISOString(),
+      };
+      await db
+        .from('restaurants')
+        .update(patch)
+        .eq('proprietaire_id', userId)
+        .eq('statut', 'en_attente');
+      await db
+        .from('boutiques')
+        .update(patch)
+        .eq('proprietaire_id', userId)
+        .eq('statut', 'en_attente');
+    }
+
     return res.json({
       ...user,
-      role: roleRow?.nom ?? null,
+      role: roleNom,
     });
   } catch (error) {
     return next(error);

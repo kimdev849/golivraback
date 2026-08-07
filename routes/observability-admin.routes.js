@@ -8,6 +8,7 @@ const adminOnly = [authMiddleware, requireRoles(['admin'])];
 
 // Dashboard & endpoint health
 router.get('/dashboard', ...adminOnly, ctrl.getObservabilityDashboard);
+router.get('/control-center', ...adminOnly, ctrl.getControlCenter);
 router.get('/endpoints', ...adminOnly, ctrl.getEndpointHealth);
 router.post('/endpoints/snapshot', ...adminOnly, ctrl.postPersistHourlySnapshot);
 
