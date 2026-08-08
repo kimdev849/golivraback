@@ -75,6 +75,19 @@ async function resolveDeliveryAddress(db, clientId, payload) {
   return { snap, id: null, text: snap.texte };
 }
 
+/**
+ * Temps de préparation (min) d'un commerce, cohérent avec l'app
+ * (lib/pricing.ts enterprisePrepMinutes) : restaurant → delai_preparation_min
+ * (défaut 20), boutique → delai_livraison_min (défaut 30). Borné 5–180.
+ */
+function establishmentPrepMinutes(row, kind) {
+  const fallback = kind === 'restaurant' ? 20 : 30;
+  const raw = kind === 'restaurant' ? row?.delai_preparation_min : row?.delai_livraison_min;
+  const n = Math.floor(Number(raw));
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.min(Math.max(n, 5), 180);
+}
+
 async function resolveEstablishmentRow(db, enterpriseId, establishmentType) {
   if (establishmentType === 'restaurant') {
     const { data, error } = await db.from('restaurants').select('*').eq('id', enterpriseId).maybeSingle();
@@ -230,10 +243,7 @@ async function createOrderFromPayload(db, clientId, payload) {
     // terminer avant la fermeture (ex. fermeture 23h, préparation 25 min →
     // dernière commande possible 22h35).
     const { assertEtablissementOuvert } = require('./horaires.service');
-    const prepMinutes =
-      kind === 'restaurant'
-        ? Number(ent.delai_preparation_min ?? 20)
-        : Number(ent.delai_livraison_min ?? 30);
+    const prepMinutes = establishmentPrepMinutes(ent, kind);
     await assertEtablissementOuvert(db, { kind, id: eid, nom: ent.nom || null, prepMinutes });
 
     const mode = resolveModeLivraison(ent);
@@ -514,6 +524,7 @@ function mapSousStatutToVendor(statut) {
 module.exports = {
   CLIENT_METHODE_PAIEMENT,
   snapshotAddress,
+  establishmentPrepMinutes,
   resolveEstablishmentRow,
   resolveModeLivraison,
   createOrderFromPayload,

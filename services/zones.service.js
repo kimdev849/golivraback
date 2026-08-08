@@ -149,6 +149,38 @@ async function resolveDeliveryPriceForQuartier(db, quartierName) {
   };
 }
 
+// ─── Temps de livraison estimé (mêmes valeurs que l'app, lib/pricing.ts) ──
+// Heuristique V1 : le prix de la zone sert de proxy de distance.
+//   zone la moins chère (proche) → 25 min · 2e zone (moyenne) → 35 min · autres (éloignée) → 45 min
+const TIER_MINUTES = [25, 35, 45];
+
+/**
+ * Estimation du temps de livraison GoLivra (min) pour un quartier, par palier
+ * de zone — cohérent avec l'affichage client (accueil, panier, confirmation).
+ * @returns {{ minutes: number|null, tier: 'proche'|'moyenne'|'éloignée'|null, tierLabel: string|null }}
+ */
+async function estimateDeliveryMinutesForQuartier(db, quartierName) {
+  const name = String(quartierName || '').trim();
+  const config = await getPublicZonesConfig(db);
+  if (!name || config.zones.length === 0) {
+    return { minutes: null, tier: null, tierLabel: null };
+  }
+
+  const arr = config.arrondissements.find((a) => a.name === name);
+  if (!arr) return { minutes: null, tier: null, tierLabel: null };
+
+  const sorted = [...config.zones]
+    .filter((z) => z.is_active)
+    .sort((a, b) => a.price_base - b.price_base || (a.sort_order ?? 0) - (b.sort_order ?? 0));
+  const idx = sorted.findIndex((z) => z.id === arr.zone_id);
+  if (idx < 0) return { minutes: null, tier: null, tierLabel: null };
+
+  const tier = idx === 0 ? 'proche' : idx === 1 ? 'moyenne' : 'éloignée';
+  const tierLabel =
+    tier === 'proche' ? 'Zone proche' : tier === 'moyenne' ? 'Zone moyenne' : 'Zone éloignée';
+  return { minutes: TIER_MINUTES[Math.min(idx, TIER_MINUTES.length - 1)], tier, tierLabel };
+}
+
 async function getAdminZonesBoard(db) {
   const [zones, arrondissements, paysData] = await Promise.all([
     listZones(db),
@@ -255,6 +287,7 @@ module.exports = {
   listArrondissements,
   getPublicZonesConfig,
   resolveDeliveryPriceForQuartier,
+  estimateDeliveryMinutesForQuartier,
   getAdminZonesBoard,
   updateAdminZonesBoard,
 };

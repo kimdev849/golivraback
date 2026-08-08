@@ -366,6 +366,75 @@ async function getOrders(req, res, next) {
   }
 }
 
+/**
+ * Estimation d'arrivée pour le client, cohérente avec l'affichage du panier :
+ *   préparation (commerce) + livraison (zone GoLivra, 25/35/45 min selon le quartier).
+ * La préparation multi-commerce se fait en parallèle → on prend le MAX des prépas.
+ * `arriveeEstimeeAt` = created_at + (préparation + livraison).
+ */
+async function computeOrderEta(db, order, sousCommandes) {
+  const { establishmentPrepMinutes, resolveEstablishmentRow } = require('../services/order.service');
+  const snap = order?.adresse_livraison_snapshot;
+  let quartier = null;
+  if (snap && typeof snap === 'object') {
+    if (typeof snap.quartier === 'string' && snap.quartier.trim()) {
+      quartier = snap.quartier.trim();
+    } else if (
+      snap.zone_pricing &&
+      typeof snap.zone_pricing === 'object' &&
+      typeof snap.zone_pricing.quartier === 'string' &&
+      snap.zone_pricing.quartier.trim()
+    ) {
+      quartier = snap.zone_pricing.quartier.trim();
+    }
+  } else if (typeof snap === 'string') {
+    // Snapshot legacy (texte brut) : on extrait le quartier du début du texte.
+    const first = String(snap).split(',')[0].replace(/^quartier\s+/i, '').trim();
+    quartier = first || null;
+  }
+
+  let prepMinutes = 0;
+  for (const sc of sousCommandes || []) {
+    const kind = sc.restaurant_id ? 'restaurant' : sc.boutique_id ? 'boutique' : null;
+    if (!kind) continue;
+    const resolved = await resolveEstablishmentRow(
+      db,
+      sc.restaurant_id || sc.boutique_id,
+      kind,
+    );
+    if (resolved) prepMinutes = Math.max(prepMinutes, establishmentPrepMinutes(resolved.row, resolved.kind));
+  }
+  prepMinutes = Math.min(Math.max(Math.floor(prepMinutes), 5), 180);
+
+  let delivery = null;
+  if (quartier) {
+    try {
+      const { estimateDeliveryMinutesForQuartier } = require('./zones.service');
+      delivery = await estimateDeliveryMinutesForQuartier(db, quartier);
+    } catch {
+      delivery = null;
+    }
+  }
+
+  const totalMinutes = delivery?.minutes != null ? prepMinutes + delivery.minutes : null;
+  let arriveeEstimeeAt = null;
+  if (totalMinutes != null && order?.created_at) {
+    arriveeEstimeeAt = new Date(
+      new Date(order.created_at).getTime() + totalMinutes * 60_000,
+    ).toISOString();
+  }
+
+  return {
+    prepMinutes,
+    deliveryMinutes: delivery?.minutes ?? null,
+    tier: delivery?.tier ?? null,
+    tierLabel: delivery?.tierLabel ?? null,
+    quartierLivraison: quartier,
+    totalMinutes,
+    arriveeEstimeeAt,
+  };
+}
+
 async function getOrderDetails(req, res, next) {
   try {
     const db = getDb();
@@ -412,9 +481,12 @@ async function getOrderDetails(req, res, next) {
     const first = sousCommandes && sousCommandes[0];
     const eid = first ? first.restaurant_id || first.boutique_id : null;
 
+    const eta = await computeOrderEta(db, order, enriched);
+
     return res.json({
       ...mapCommandeListRow(order, eid),
       sousCommandes: enriched,
+      eta,
       livraisons: (livraisons || []).map((l) => ({ id: l.id, statut: l.statut, type_livraison: l.type_livraison })),
     });
   } catch (error) {
