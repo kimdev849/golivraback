@@ -110,24 +110,29 @@ async function handle(db, payload, { rawBody, signature } = {}) {
     try {
       const { escrows, totalBloqueFcfa } = await escrowService.hold(db, updated.commandeId, updated.id);
 
-      // Délai d'acceptation : les 15 minutes démarrent à la CONFIRMATION du
-      // paiement (spec : « Paiement Mobile Money → le restaurant a 15 min pour
-      // accepter »). On réarme la limite si la commande est encore en attente.
+      // Délai d'acceptation : le commerce a 5 min pour accepter. Dans le nouveau
+      // parcours, l'acceptation précède le paiement → on réarme uniquement pour
+      // les commandes encore en attente (rétro-compat : anciennes versions de
+      // l'app qui paient avant l'acceptation).
       const { data: cmd } = await db
         .from('commandes')
         .select('statut, expiree_at')
         .eq('id', updated.commandeId)
         .maybeSingle();
-      const acceptation = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-      if (
-        cmd &&
-        cmd.expiree_at == null &&
-        (cmd.statut === 'en_attente' || cmd.statut === 'partiellement_acceptee')
-      ) {
-        await db
-          .from('commandes')
-          .update({ acceptation_limite_at: acceptation, updated_at: new Date().toISOString() })
-          .eq('id', updated.commandeId);
+      if (cmd) {
+        const patch = {
+          // Le paiement est validé → le délai de paiement du client (5 min)
+          // n'a plus lieu d'être.
+          paiement_limite_at: null,
+          updated_at: new Date().toISOString(),
+        };
+        if (
+          cmd.expiree_at == null &&
+          (cmd.statut === 'en_attente' || cmd.statut === 'partiellement_acceptee')
+        ) {
+          patch.acceptation_limite_at = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+        }
+        await db.from('commandes').update(patch).eq('id', updated.commandeId);
       }
 
       // Paiement reçu APRÈS l'expiration de la commande : l'argent ne doit pas

@@ -21,6 +21,36 @@ function isTestPaymentMode() {
   return ['test', 'mock', 'dev'].includes(PAYMENT_MODE) || !pawapay.isLive();
 }
 
+/**
+ * Nouveau parcours « paiement après acceptation » :
+ *   - la commande n'est payable qu'une fois acceptée (toutes les réponses
+ *     réunies, au moins un commerce accepté) ;
+ *   - le client ne paie QUE les segments acceptés (jamais les refusés/expirés),
+ *     plafonné au total initial de la commande (jamais plus cher).
+ */
+const PAYABLE_SC_STATUTS = new Set([
+  'acceptee',
+  'en_preparation',
+  'prete',
+  'collectee',
+  'livree',
+]);
+const PAYABLE_COMMANDE_STATUTS = new Set(['acceptee', 'partiellement_acceptee']);
+
+async function computePayableAmount(db, commande) {
+  const { data: scs, error } = await db
+    .from('sous_commandes')
+    .select('id, total, statut')
+    .eq('commande_id', commande.id);
+  if (error) throw error;
+  let sum = 0;
+  for (const sc of scs || []) {
+    if (PAYABLE_SC_STATUTS.has(sc.statut)) sum += Number(sc.total ?? 0);
+  }
+  const cap = Math.max(0, Math.round(Number(commande.total ?? 0)));
+  return Math.min(Math.round(sum), cap);
+}
+
 function newDepositId() {
   return `dp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -31,7 +61,7 @@ function newDepositId() {
 async function assertOrderOwnedByClient(db, commandeId, clientId) {
   const { data: commande, error } = await db
     .from('commandes')
-    .select('id, client_id, total, methode_paiement, statut')
+    .select('id, client_id, total, methode_paiement, statut, paiement_limite_at')
     .eq('id', commandeId)
     .maybeSingle();
   if (error) throw error;
@@ -45,14 +75,15 @@ async function assertOrderOwnedByClient(db, commandeId, clientId) {
  * Le schéma de la plateforme crée déjà un paiement `en_attente` lors de
  * la création de la commande, mais on garde un fallback pour la robustesse.
  */
-async function ensurePendingPayment(db, commande, utilisateurId, payload) {
+async function ensurePendingPayment(db, commande, utilisateurId, payload, montantFcfa) {
   const existing = await paymentRepo.findLatestForCommande(db, commande.id);
   if (existing) {
     if (existing.statut === 'valide') return existing;
     if (existing.statut === 'en_attente' || existing.statut === 'echoue') {
-      // Met à jour avec la nouvelle méthode / provider
+      // Met à jour avec la nouvelle méthode / provider + montant à payer réel
       return paymentRepo.update(db, existing.id, {
         methode: payload.methode,
+        montant: montantFcfa ?? Number(commande.total ?? 0),
         provider_country: payload.providerCountry || null,
         provider_correspondent: payload.providerCorrespondent || null,
         statut: 'en_attente',
@@ -64,7 +95,7 @@ async function ensurePendingPayment(db, commande, utilisateurId, payload) {
   return paymentRepo.create(db, {
     commandeId: commande.id,
     utilisateurId,
-    montantFcfa: Number(commande.total ?? 0),
+    montantFcfa: montantFcfa ?? Number(commande.total ?? 0),
     methode: payload.methode,
     providerCountry: payload.providerCountry,
     providerCorrespondent: payload.providerCorrespondent,
@@ -78,7 +109,22 @@ async function ensurePendingPayment(db, commande, utilisateurId, payload) {
  */
 async function initiate(db, commandeId, clientId, payload) {
   const commande = await assertOrderOwnedByClient(db, commandeId, clientId);
-  const paiement = await ensurePendingPayment(db, commande, clientId, payload);
+
+  // Nouveau parcours : la commande n'est payable qu'une fois acceptée par au
+  // moins un commerce, et avant l'expiration du délai de paiement (5 min).
+  if (!PAYABLE_COMMANDE_STATUTS.has(commande.statut)) {
+    throw createHttpError(400, 'La commande doit être acceptée avant le paiement.');
+  }
+  const paiementLimite = commande.paiement_limite_at
+    ? new Date(commande.paiement_limite_at).getTime()
+    : null;
+  if (paiementLimite != null && Date.now() > paiementLimite) {
+    throw createHttpError(400, 'Le délai de paiement (5 minutes) est expiré : la commande a été annulée.');
+  }
+
+  // Le client ne paie que les segments acceptés (jamais plus que le total initial).
+  const montantFcfa = await computePayableAmount(db, commande);
+  const paiement = await ensurePendingPayment(db, commande, clientId, payload, montantFcfa);
 
   if (paiement.statut === 'valide') {
     return { paiement, commande, dejaValide: true, simulation: false };

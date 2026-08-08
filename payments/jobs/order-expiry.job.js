@@ -27,7 +27,11 @@ const { getDb } = require('../../config/db');
 const { info: logInfo, error: logError, warn: logWarn } = require('../../utils/logger');
 
 const ENABLED = process.env.ORDER_EXPIRY_ENABLED !== '0';
-const MOTIF = 'Commande non confirmée par le commerce dans le délai de 15 minutes';
+const MOTIF = 'Commande non confirmée par le commerce dans le délai de 5 minutes';
+/** Rappel envoyé au commerce quand il reste <= 3 minutes pour répondre. */
+const RAPPEL_AVANT_MIN = 3;
+/** Motif d'annulation quand le client ne paie pas dans le délai imparti. */
+const MOTIF_PAIEMENT_EXPIRE = "Le client n'a pas effectué le paiement dans le délai imparti";
 
 async function insertRemboursement(db, { commandeId, paiementId, montant }) {
   try {
@@ -249,6 +253,109 @@ async function expireCommande(db, commande) {
   return { expirees, remboursees: rembourse ? 1 : 0 };
 }
 
+/**
+ * Rappel d'acceptation : quand il reste <= 3 min au commerce pour répondre,
+ * on notifie le vendeur UNE SEULE FOIS (gardé par acceptation_rappel_at).
+ */
+async function sendAcceptanceReminders(db) {
+  const nowIso = new Date().toISOString();
+  const seuil = new Date(Date.now() + RAPPEL_AVANT_MIN * 60 * 1000).toISOString();
+  const { data: rows, error } = await db
+    .from('commandes')
+    .select('id')
+    .in('statut', ['en_attente', 'partiellement_acceptee'])
+    .is('acceptation_rappel_at', null)
+    .gt('acceptation_limite_at', nowIso)
+    .lt('acceptation_limite_at', seuil)
+    .limit(20);
+  if (error) throw error;
+
+  let rappels = 0;
+  for (const cmd of rows || []) {
+    try {
+      const { notifyAcceptanceReminder } = require('../../services/order-notify.service');
+      await notifyAcceptanceReminder(db, cmd.id);
+      await db
+        .from('commandes')
+        .update({ acceptation_rappel_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+        .eq('id', cmd.id);
+      rappels += 1;
+    } catch (err) {
+      logError({ msg: 'orderExpiryJob_rappel', commandeId: cmd.id, error: err.message });
+    }
+  }
+  return rappels;
+}
+
+/**
+ * Délai de paiement expiré (5 min après acceptation) : le client n'a pas payé
+ * → la commande est annulée (rien n'a été débité, aucun remboursement requis)
+ * et chaque commerce concerné retrouve ses activités.
+ */
+async function expireCommandesNonPayees(db) {
+  const { data: rows, error } = await db
+    .from('commandes')
+    .select('id')
+    .in('statut', ['acceptee', 'partiellement_acceptee'])
+    .not('paiement_limite_at', 'is', null)
+    .lt('paiement_limite_at', new Date().toISOString())
+    .limit(20);
+  if (error) throw error;
+
+  let expirees = 0;
+  for (const cmd of rows || []) {
+    try {
+      const { data: paiement } = await db
+        .from('paiements')
+        .select('statut, pawapay_deposit_id')
+        .eq('commande_id', cmd.id)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (paiement?.statut === 'valide') continue; // payé juste avant : on ne touche à rien
+      // Grâce anti-course : un dépôt PawaPay initié (en_attente avec id dépôt)
+      // signifie que le client a payé et que le webhook va confirmer — on ne
+      // doit PAS annuler la commande entre-temps, sinon le paiement arriverait
+      // sur une commande annulée (remboursé ensuite, mais commande perdue à tort).
+      if (paiement?.statut === 'en_attente' && paiement.pawapay_deposit_id) continue;
+
+      const now = new Date().toISOString();
+      const { data: scs } = await db.from('sous_commandes').select('id, statut').eq('commande_id', cmd.id);
+      for (const sc of scs || []) {
+        if (sc.statut === 'acceptee' || sc.statut === 'en_attente') {
+          await db
+            .from('sous_commandes')
+            .update({ statut: 'annulee', raison_refus: MOTIF_PAIEMENT_EXPIRE, updated_at: now })
+            .eq('id', sc.id);
+        }
+      }
+
+      const { syncCommandeStatutFromSousCommandes } = require('../../services/order.service');
+      await syncCommandeStatutFromSousCommandes(db, cmd.id).catch((err) =>
+        logWarn({ msg: 'orderExpiryJob_sync_paiement', commandeId: cmd.id, error: err.message }),
+      );
+      await db
+        .from('commandes')
+        .update({
+          annulation_motif: MOTIF_PAIEMENT_EXPIRE,
+          expiree_at: now,
+          paiement_limite_at: null,
+          updated_at: now,
+        })
+        .eq('id', cmd.id);
+
+      const { notifyPaymentDeadlineExpired } = require('../../services/order-notify.service');
+      await notifyPaymentDeadlineExpired(db, cmd.id).catch((err) =>
+        logWarn({ msg: 'orderExpiryJob_notify_paiement', commandeId: cmd.id, error: err.message }),
+      );
+      expirees += 1;
+    } catch (err) {
+      logError({ msg: 'orderExpiryJob_expire_paiement', commandeId: cmd.id, error: err.message });
+    }
+  }
+  return expirees;
+}
+
 async function runOnce() {
   if (!ENABLED) return { skipped: true, reason: 'ORDER_EXPIRY_ENABLED=0' };
   const db = getDb();
@@ -265,7 +372,14 @@ async function runOnce() {
     .limit(50);
   if (error) throw error;
 
-  const results = { scanned: (expired || []).length, expirees: 0, remboursees: 0, erreurs: 0 };
+  const results = {
+    scanned: (expired || []).length,
+    expirees: 0,
+    remboursees: 0,
+    rappels: 0,
+    paiements_expires: 0,
+    erreurs: 0,
+  };
   for (const cmd of expired || []) {
     try {
       const r = await expireCommande(db, cmd);
@@ -277,7 +391,21 @@ async function runOnce() {
     }
   }
 
-  if (results.scanned > 0 || results.erreurs > 0) {
+  // Rappel d'acceptation (<= 3 min restantes) + délai de paiement expiré.
+  try {
+    results.rappels = await sendAcceptanceReminders(db);
+  } catch (err) {
+    results.erreurs += 1;
+    logError({ msg: 'orderExpiryJob_rappels', error: err.message });
+  }
+  try {
+    results.paiements_expires = await expireCommandesNonPayees(db);
+  } catch (err) {
+    results.erreurs += 1;
+    logError({ msg: 'orderExpiryJob_paiements', error: err.message });
+  }
+
+  if (results.scanned > 0 || results.rappels > 0 || results.paiements_expires > 0 || results.erreurs > 0) {
     logInfo({ msg: 'orderExpiryJob_tick', ...results });
   }
   return results;

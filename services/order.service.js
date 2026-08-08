@@ -5,6 +5,25 @@ const { formatAddressText, getAddressForUser } = require('./address.service');
 /** Paiement client : Mobile Money uniquement (Airtel / MTN). */
 const CLIENT_METHODE_PAIEMENT = new Set(['airtel_money', 'mtn_money']);
 
+/**
+ * Nouveau parcours « paiement après acceptation » :
+ *   - ACCEPTANCE_LIMIT_MIN : le commerce a 5 min pour accepter/refuser
+ *     (rappel envoyé à 3 min par le job d'expiration) ;
+ *   - PAYMENT_LIMIT_MIN : une fois les réponses réunies, le client a 5 min
+ *     pour payer les segments acceptés, sinon la commande est annulée.
+ */
+const ACCEPTANCE_LIMIT_MIN = 5;
+const PAYMENT_LIMIT_MIN = 5;
+
+/** Statuts d'une sous-commande qui restent payables après acceptation. */
+const PAYABLE_SC_STATUTS = new Set([
+  'acceptee',
+  'en_preparation',
+  'prete',
+  'collectee',
+  'livree',
+]);
+
 const ALLOWED_METHODE_PAIEMENT = new Set([
   ...CLIENT_METHODE_PAIEMENT,
   'especes',
@@ -315,9 +334,9 @@ async function createOrderFromPayload(db, clientId, payload) {
     return { commande: full, sousCommandes: scs || [], dejaExistante: true };
   }
 
-  // Le commerce a 15 minutes pour accepter la commande : passé ce délai, un
-  // job expire la commande et déclenche le remboursement automatique du client.
-  const acceptationLimite = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+  // Le commerce a 5 minutes pour accepter la commande : passé ce délai, un
+  // job expire la commande. Aucun paiement n'est pris avant l'acceptation.
+  const acceptationLimite = new Date(Date.now() + ACCEPTANCE_LIMIT_MIN * 60 * 1000).toISOString();
 
   const { data: commande, error: cErr } = await db
     .from('commandes')
@@ -433,6 +452,34 @@ async function syncCommandeStatutFromSousCommandes(db, commandeId) {
   if (next === 'livree') patch.livree_at = now;
   if (next === 'remboursee') patch.expiree_at = now;
 
+  // Délai de paiement du client : la commande est « prête à être payée » dès
+  // que toutes les sous-commandes ont répondu (plus aucune en_attente) et
+  // qu'au moins une est acceptée. On arme paiement_limite_at une seule fois,
+  // tant que le paiement n'est pas encore validé (effacé par le webhook).
+  if (
+    (next === 'acceptee' || next === 'partiellement_acceptee') &&
+    !statuts.includes('en_attente') &&
+    statuts.some((s) => PAYABLE_SC_STATUTS.has(s))
+  ) {
+    const { data: p } = await db
+      .from('paiements')
+      .select('statut')
+      .eq('commande_id', commandeId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const { data: cur } = await db
+      .from('commandes')
+      .select('paiement_limite_at')
+      .eq('id', commandeId)
+      .maybeSingle();
+    if (p?.statut !== 'valide' && cur && !cur.paiement_limite_at) {
+      patch.paiement_limite_at = new Date(
+        Date.now() + PAYMENT_LIMIT_MIN * 60 * 1000,
+      ).toISOString();
+    }
+  }
+
   await db.from('commandes').update(patch).eq('id', commandeId);
 }
 
@@ -445,7 +492,10 @@ async function updateSousCommandeStatut(db, sousCommandeId, statut, extra = {}) 
   if (scErr) throw scErr;
   if (!sc) throw createHttpError(404, 'Commande introuvable');
 
-  if (statut === 'acceptee' || statut === 'en_preparation' || statut === 'prete') {
+  // Nouveau parcours : l'ACCEPTATION ne requiert plus de paiement (le client
+  // paie APRÈS acceptation). Seuls la préparation et l'état prêt exigent un
+  // paiement validé — « la commande n'est réellement confirmée qu'à paiement ».
+  if (statut === 'en_preparation' || statut === 'prete') {
     const { assertCommandePayee } = require('./payment.service');
     await assertCommandePayee(db, sc.commande_id);
   }
@@ -523,6 +573,9 @@ function mapSousStatutToVendor(statut) {
 
 module.exports = {
   CLIENT_METHODE_PAIEMENT,
+  ACCEPTANCE_LIMIT_MIN,
+  PAYMENT_LIMIT_MIN,
+  PAYABLE_SC_STATUTS,
   snapshotAddress,
   establishmentPrepMinutes,
   resolveEstablishmentRow,

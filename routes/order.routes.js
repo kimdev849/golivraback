@@ -5,6 +5,7 @@ const {
   getVendorOrders,
   getVendorOrderDetails,
   getOrderDetails,
+  cancelOrder,
   updateOrderStatus,
 } = require('../controllers/order.controller');
 const { payOrder, getPaymentMode, getPaymentStatus, getPricingConfigHandler } = require('../controllers/payment.controller');
@@ -22,6 +23,7 @@ router.get('/vendor/:orderId', authMiddleware, requireRoles(['restaurateur', 'co
 router.get('/:orderId', authMiddleware, getOrderDetails);
 router.post('/', authMiddleware, requireRoles(['client', 'admin']), createOrder);
 router.post('/:orderId/pay', authMiddleware, requireRoles(['client', 'admin']), payOrder);
+router.post('/:orderId/cancel', authMiddleware, requireRoles(['client', 'admin']), cancelOrder);
 router.patch('/:orderId/status', authMiddleware, requireRoles(['restaurateur', 'commercant', 'admin']), updateOrderStatus);
 
 module.exports = router;

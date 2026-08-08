@@ -4,6 +4,7 @@ const {
   createOrderFromPayload,
   updateSousCommandeStatut,
   mapSousStatutToVendor,
+  PAYABLE_SC_STATUTS,
 } = require('../services/order.service');
 
 /** Statuts autorisés pour une sous-commande (schéma v3). */
@@ -175,6 +176,15 @@ async function mapVendorOrderRow(db, sc, commande, client) {
   else if (typeof snap === 'string') addr = snap;
 
   let livreur = null;
+  let paiementStatut = null;
+  const { data: paiement } = await db
+    .from('paiements')
+    .select('statut')
+    .eq('commande_id', commande.id)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (paiement?.statut) paiementStatut = paiement.statut;
   const { data: livraison } = await db
     .from('livraisons')
     .select('livreur_id, statut')
@@ -217,6 +227,8 @@ async function mapVendorOrderRow(db, sc, commande, client) {
     })),
     livreur: livreur || undefined,
     livraison_statut: livraison?.statut ?? null,
+    paiement_statut: paiementStatut,
+    paiement_limite_at: commande.paiement_limite_at ?? null,
     created_at: commande.created_at,
   };
 }
@@ -470,13 +482,38 @@ async function getOrderDetails(req, res, next) {
     for (const sc of sousCommandes || []) {
       const { data: items } = await db.from('sous_commande_items').select('*').eq('sous_commande_id', sc.id);
       const livs = livraisonBySc.get(sc.id) || [];
+      // Nom du commerce pour l'affichage client (répartition acceptée/refusée).
+      let commerceNom = null;
+      if (sc.restaurant_id) {
+        const { data: r } = await db.from('restaurants').select('nom').eq('id', sc.restaurant_id).maybeSingle();
+        commerceNom = r?.nom ?? null;
+      } else if (sc.boutique_id) {
+        const { data: b } = await db.from('boutiques').select('nom').eq('id', sc.boutique_id).maybeSingle();
+        commerceNom = b?.nom ?? null;
+      }
       enriched.push({
         ...sc,
+        commerce_nom: commerceNom,
         articles: items || [],
         livraisons: livs.map((l) => ({ id: l.id, statut: l.statut, type_livraison: l.type_livraison })),
         livraison_id: livs[0]?.id || null,
       });
     }
+
+    // Statut du paiement + montant réellement dû (segments acceptés uniquement).
+    const { data: paiementRow } = await db
+      .from('paiements')
+      .select('statut')
+      .eq('commande_id', orderId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const paiementStatut = paiementRow?.statut ?? null;
+    let totalAPayer = 0;
+    for (const sc of enriched) {
+      if (PAYABLE_SC_STATUTS.has(sc.statut)) totalAPayer += Number(sc.total ?? 0);
+    }
+    totalAPayer = Math.min(Math.round(totalAPayer), Number(order.total ?? 0));
 
     const first = sousCommandes && sousCommandes[0];
     const eid = first ? first.restaurant_id || first.boutique_id : null;
@@ -487,8 +524,75 @@ async function getOrderDetails(req, res, next) {
       ...mapCommandeListRow(order, eid),
       sousCommandes: enriched,
       eta,
+      paiement_statut: paiementStatut,
+      paiement_limite_at: order.paiement_limite_at ?? null,
+      acceptation_limite_at: order.acceptation_limite_at ?? null,
+      annulation_motif: order.annulation_motif ?? null,
+      total_a_payer: totalAPayer,
       livraisons: (livraisons || []).map((l) => ({ id: l.id, statut: l.statut, type_livraison: l.type_livraison })),
     });
+  } catch (error) {
+    return next(error);
+  }
+}
+
+/**
+ * Annulation par le CLIENT (uniquement tant que la commande n'est pas payée) :
+ * utile dans le nouveau parcours quand il choisit « Annuler toute la commande »
+ * après des refus / expirations, ou s'il ne souhaite plus payer.
+ */
+async function cancelOrder(req, res, next) {
+  try {
+    const db = getDb();
+    const { orderId } = req.params;
+
+    const { data: order } = await db
+      .from('commandes')
+      .select('*')
+      .eq('id', orderId)
+      .eq('client_id', req.auth.userId)
+      .maybeSingle();
+    if (!order) throw createHttpError(404, 'Commande introuvable');
+
+    const { data: paiement } = await db
+      .from('paiements')
+      .select('statut')
+      .eq('commande_id', orderId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (paiement?.statut === 'valide') {
+      throw createHttpError(400, 'La commande est déjà payée : annulation impossible.');
+    }
+
+    const now = new Date().toISOString();
+    const { data: scs } = await db.from('sous_commandes').select('id, statut').eq('commande_id', orderId);
+    for (const sc of scs || []) {
+      if (sc.statut === 'en_attente' || sc.statut === 'acceptee') {
+        await db
+          .from('sous_commandes')
+          .update({ statut: 'annulee', raison_refus: 'Annulé par le client', updated_at: now })
+          .eq('id', sc.id);
+      }
+    }
+
+    const { syncCommandeStatutFromSousCommandes } = require('../services/order.service');
+    await syncCommandeStatutFromSousCommandes(db, orderId);
+    await db
+      .from('commandes')
+      .update({
+        annulation_motif: 'Annulé par le client',
+        paiement_limite_at: null,
+        updated_at: now,
+      })
+      .eq('id', orderId);
+
+    const { notifyOrderExpired } = require('../services/order-notify.service');
+    await notifyOrderExpired(db, orderId, {
+      remboursementEnCours: false,
+      raisonClient: 'Votre commande a été annulée.',
+    });
+    return res.json({ ok: true });
   } catch (error) {
     return next(error);
   }
@@ -544,7 +648,7 @@ async function updateOrderStatus(req, res, next) {
       if (limite != null && Date.now() > limite) {
         throw createHttpError(
           400,
-          'Le délai d\'acceptation (15 minutes) est dépassé : la commande a été annulée et le client remboursé.',
+          'Le délai d\'acceptation (5 minutes) est dépassé : la commande a été annulée.',
         );
       }
     }
@@ -588,5 +692,6 @@ module.exports = {
   getVendorOrders,
   getVendorOrderDetails,
   getOrderDetails,
+  cancelOrder,
   updateOrderStatus,
 };

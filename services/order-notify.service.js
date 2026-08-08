@@ -80,8 +80,8 @@ async function notifyVendors(db, vendorOwnerIds, payload) {
 async function notifyOrderCreated(db, commandeId, clientId) {
   await notifyClient(db, clientId, {
     type: 'commande_nouvelle',
-    titre: 'Commande créée',
-    corps: 'Finalisez le paiement Mobile Money pour confirmer votre commande.',
+    titre: 'Commande envoyée',
+    corps: "Votre commande est en attente de confirmation. Les commerces ont 5 minutes pour accepter.",
     data: { commande_id: commandeId, action: 'open_orders' },
   });
 }
@@ -183,11 +183,16 @@ async function notifySousCommandeStatusChange(db, sousCommandeId, statut) {
 }
 
 /**
- * Commande expirée : le commerce n'a pas accepté dans le délai de 15 minutes.
- * Le client est informé que son remboursement est en cours (Mobile Money via
- * PawaPay, ou solde GoLivra en repli), les vendeurs que la commande est annulée.
+ * Commande expirée / annulée : le commerce n'a pas accepté dans le délai de
+ * 5 minutes (ou le client a annulé sa commande). Si un paiement avait déjà été
+ * validé (cas legacy), le remboursement est en cours ; sinon il n'y a rien à
+ * rembourser — le client est invité à choisir une autre boutique.
  */
-async function notifyOrderExpired(db, commandeId, { remboursementEnCours = true } = {}) {
+async function notifyOrderExpired(
+  db,
+  commandeId,
+  { remboursementEnCours = true, raisonClient = null } = {},
+) {
   const { data: commande } = await db
     .from('commandes')
     .select('id, numero, client_id')
@@ -195,16 +200,19 @@ async function notifyOrderExpired(db, commandeId, { remboursementEnCours = true 
     .maybeSingle();
   if (!commande) return;
 
+  const corpsClient = raisonClient
+    ? raisonClient
+    : remboursementEnCours
+      ? "La boutique n'a pas pu confirmer votre commande. Votre remboursement est en cours."
+      : "La boutique n'a pas pu confirmer votre commande. Elle a été annulée — vous pouvez choisir une autre boutique.";
   await notifyClient(db, commande.client_id, {
     type: 'commande_expiree',
-    titre: 'Commande expirée',
-    corps: remboursementEnCours
-      ? "Le restaurant n'a pas confirmé votre commande. Votre remboursement est en cours."
-      : "Le restaurant n'a pas confirmé votre commande. Elle a été annulée.",
+    titre: raisonClient ? 'Commande annulée' : 'Commande expirée',
+    corps: corpsClient,
     data: { commande_id: commandeId, action: 'open_orders' },
   });
 
-  // Vendeurs concernés : la commande liée à leur commerce a expiré.
+  // Vendeurs concernés : la commande liée à leur commerce a expiré / été annulée.
   const { data: sous } = await db
     .from('sous_commandes')
     .select('id, restaurant_id, boutique_id')
@@ -222,8 +230,84 @@ async function notifyOrderExpired(db, commandeId, { remboursementEnCours = true 
   }
   await notifyVendors(db, [...ownerIds], {
     type: 'commande_expiree',
-    titre: 'Commande expirée',
-    corps: 'Le délai d\'acceptation (15 min) est dépassé : la commande a été annulée et le client remboursé.',
+    titre: raisonClient ? 'Commande annulée par le client' : 'Commande expirée',
+    corps: raisonClient
+      ? 'Le client a annulé la commande.'
+      : "Le délai d'acceptation (5 min) est dépassé : la commande a été annulée et le client remboursé le cas échéant.",
+    data: { commande_id: commandeId, action: 'vendor_orders' },
+  });
+}
+
+/** Rappel à la boutique : il reste moins de 3 minutes pour accepter/refuser. */
+async function notifyAcceptanceReminder(db, commandeId) {
+  const { data: commande } = await db
+    .from('commandes')
+    .select('id, numero, client_id')
+    .eq('id', commandeId)
+    .maybeSingle();
+  if (!commande) return;
+
+  // Le rappel ne concerne que les commerces qui n'ont PAS encore répondu.
+  const { data: sous } = await db
+    .from('sous_commandes')
+    .select('id, restaurant_id, boutique_id')
+    .eq('commande_id', commandeId)
+    .eq('statut', 'en_attente');
+  const ownerIds = new Set();
+  for (const sc of sous || []) {
+    if (sc.restaurant_id) {
+      const { data: r } = await db.from('restaurants').select('proprietaire_id').eq('id', sc.restaurant_id).maybeSingle();
+      if (r?.proprietaire_id) ownerIds.add(r.proprietaire_id);
+    }
+    if (sc.boutique_id) {
+      const { data: b } = await db.from('boutiques').select('proprietaire_id').eq('id', sc.boutique_id).maybeSingle();
+      if (b?.proprietaire_id) ownerIds.add(b.proprietaire_id);
+    }
+  }
+  if (ownerIds.size === 0) return;
+  await notifyVendors(db, [...ownerIds], {
+    type: 'commande_nouvelle',
+    titre: '⏱️ Réponse attendue',
+    corps: "Il vous reste moins de 3 minutes pour accepter la commande, sinon elle sera automatiquement annulée.",
+    data: { commande_id: commandeId, action: 'vendor_orders' },
+  });
+}
+
+/** Délai de paiement expiré : le client n'a pas payé dans les 5 minutes. */
+async function notifyPaymentDeadlineExpired(db, commandeId) {
+  const { data: commande } = await db
+    .from('commandes')
+    .select('id, numero, client_id')
+    .eq('id', commandeId)
+    .maybeSingle();
+  if (!commande) return;
+
+  await notifyClient(db, commande.client_id, {
+    type: 'commande_expiree',
+    titre: 'Délai de paiement expiré',
+    corps: 'Le délai de paiement est expiré, votre commande a été annulée. Vous pouvez relancer une commande quand vous le souhaitez.',
+    data: { commande_id: commandeId, action: 'open_orders' },
+  });
+
+  const { data: sous } = await db
+    .from('sous_commandes')
+    .select('id, restaurant_id, boutique_id')
+    .eq('commande_id', commandeId);
+  const ownerIds = new Set();
+  for (const sc of sous || []) {
+    if (sc.restaurant_id) {
+      const { data: r } = await db.from('restaurants').select('proprietaire_id').eq('id', sc.restaurant_id).maybeSingle();
+      if (r?.proprietaire_id) ownerIds.add(r.proprietaire_id);
+    }
+    if (sc.boutique_id) {
+      const { data: b } = await db.from('boutiques').select('proprietaire_id').eq('id', sc.boutique_id).maybeSingle();
+      if (b?.proprietaire_id) ownerIds.add(b.proprietaire_id);
+    }
+  }
+  await notifyVendors(db, [...ownerIds], {
+    type: 'commande_expiree',
+    titre: 'Paiement client expiré',
+    corps: "Le client n'a pas effectué le paiement dans le délai imparti. La commande a été annulée.",
     data: { commande_id: commandeId, action: 'vendor_orders' },
   });
 }
@@ -338,6 +422,8 @@ module.exports = {
   notifyPromoApplied,
   notifySousCommandeStatusChange,
   notifyOrderExpired,
+  notifyAcceptanceReminder,
+  notifyPaymentDeadlineExpired,
   notifyDeliveryAccepted,
   notifyDeliveryStep,
   notifyDeliveryCompleted,
