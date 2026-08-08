@@ -21,7 +21,11 @@ async function payOrder(req, res, next) {
       provider,
       numero_compte: numeroCompte,
     });
-    if (!result.deja_valide) {
+    // La notification « paiement confirmé » n'est envoyée que si le paiement
+    // est déjà passé à « valide » dans cet appel (mode test / simulation). En
+    // live, le dépôt reste « en_attente » et c'est le webhook PawaPay qui
+    // confirme puis notifie — évite un message prématuré + doublon.
+    if (!result.deja_valide && result.simulation) {
       const { notifyPaymentConfirmed } = require('../services/order-notify.service');
       await notifyPaymentConfirmed(db, result.commande.id, req.auth.userId);
     }

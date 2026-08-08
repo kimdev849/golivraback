@@ -149,6 +149,16 @@ async function handle(db, payload, { rawBody, signature } = {}) {
         }
       }
 
+      // Notification « paiement confirmé » (client + commerces). Essentielle
+      // pour les dépôts initiés automatiquement à l'acceptation (aucun appel
+      // manuel du client sur l'API).
+      try {
+        const { notifyPaymentConfirmed } = require('../../services/order-notify.service');
+        await notifyPaymentConfirmed(db, updated.commandeId, updated.utilisateurId);
+      } catch (err) {
+        logWarn({ msg: 'pawapay_deposit_notify', paiementId: updated.id, error: err.message });
+      }
+
       return { ok: true, paiement: updated, escrow: { escrows, totalBloqueFcfa } };
     } catch (err) {
       logError({ msg: 'escrow_hold_after_deposit', paiementId: updated.id, error: err.message });

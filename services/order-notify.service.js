@@ -238,6 +238,21 @@ async function notifyOrderExpired(
   });
 }
 
+/**
+ * Paiement requis : la commande est acceptée et le client a 5 min pour payer.
+ * Envoyée automatiquement dès que toutes les réponses sont réunies (le dépôt
+ * Mobile Money est initié automatiquement en parallèle par le backend).
+ */
+async function notifyPaymentRequired(db, commandeId, clientId, montantFcfa) {
+  if (!clientId) return;
+  await notifyClient(db, clientId, {
+    type: 'paiement',
+    titre: '💳 Paiement requis',
+    corps: `Votre commande a été acceptée. Confirmez le paiement de ${Number(montantFcfa || 0).toLocaleString('fr-FR')} FCFA — vous avez 5 minutes.`, 
+    data: { commande_id: commandeId, action: 'open_order_tracking' },
+  });
+}
+
 /** Rappel à la boutique : il reste moins de 3 minutes pour accepter/refuser. */
 async function notifyAcceptanceReminder(db, commandeId) {
   const { data: commande } = await db
@@ -284,9 +299,9 @@ async function notifyPaymentDeadlineExpired(db, commandeId) {
 
   await notifyClient(db, commande.client_id, {
     type: 'commande_expiree',
-    titre: 'Délai de paiement expiré',
-    corps: 'Le délai de paiement est expiré, votre commande a été annulée. Vous pouvez relancer une commande quand vous le souhaitez.',
-    data: { commande_id: commandeId, action: 'open_orders' },
+    titre: 'Paiement non effectué',
+    corps: "Vous n'avez pas confirmé le paiement dans les 5 minutes, votre commande a donc été annulée. Vous pouvez en passer une nouvelle quand vous le souhaitez.",
+    data: { commande_id: commandeId, action: 'open_order_tracking' },
   });
 
   const { data: sous } = await db
@@ -419,6 +434,7 @@ module.exports = {
   getLivraisonParties,
   notifyOrderCreated,
   notifyPaymentConfirmed,
+  notifyPaymentRequired,
   notifyPromoApplied,
   notifySousCommandeStatusChange,
   notifyOrderExpired,

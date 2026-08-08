@@ -61,6 +61,7 @@ async function payOrderForClient(db, commandeId, clientId, { provider, numero_co
     commande: result.commande,
     paiement: paiementRow,
     deja_valide: Boolean(result.dejaValide),
+    simulation: Boolean(result.simulation),
   };
 }
 

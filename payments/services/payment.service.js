@@ -216,6 +216,60 @@ async function initiate(db, commandeId, clientId, payload) {
 }
 
 /**
+ * Déclenchement automatique du dépôt Mobile Money : dès que la commande est
+ * payable (acceptée), le backend initie le dépôt PawaPay vers le numéro
+ * enregistré du client — le client n'a plus qu'à valider la demande sur son
+ * téléphone (code PIN). Gardes anti-doublon : déjà payé, dépôt déjà initié,
+ * délai de paiement expiré → on ne relance jamais.
+ *
+ * @returns {Promise<{initie: boolean, raison?: string, result?: object}>}
+ */
+async function autoInitiatePaymentIfReady(db, commandeId) {
+  const { data: commande, error } = await db
+    .from('commandes')
+    .select('id, client_id, statut, methode_paiement, paiement_limite_at')
+    .eq('id', commandeId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!commande) return { initie: false, raison: 'commande_introuvable' };
+
+  if (!PAYABLE_COMMANDE_STATUTS.has(commande.statut)) {
+    return { initie: false, raison: 'pas_encore_payable' };
+  }
+
+  const paiement = await paymentRepo.findLatestForCommande(db, commandeId);
+  if (paiement?.statut === 'valide') return { initie: false, raison: 'deja_paye' };
+  if (paiement?.statut === 'en_attente' && paiement.pawapayDepositId) {
+    return { initie: false, raison: 'depot_deja_initie' };
+  }
+
+  // Le délai de paiement doit être armé (5 min) : sans lui, on ne déclenche
+  // jamais un dépôt (commande legacy ou hors fenêtre de paiement).
+  const limite = commande.paiement_limite_at
+    ? new Date(commande.paiement_limite_at).getTime()
+    : null;
+  if (limite == null) return { initie: false, raison: 'delai_non_arme' };
+  if (Date.now() > limite) {
+    return { initie: false, raison: 'delai_expire' };
+  }
+
+  // Numéro Mobile Money du client enregistré dans son compte.
+  const { data: user } = await db
+    .from('utilisateurs')
+    .select('telephone')
+    .eq('id', commande.client_id)
+    .maybeSingle();
+  const numeroCompte = user?.telephone ? String(user.telephone).trim() : '';
+  if (!numeroCompte) return { initie: false, raison: 'telephone_absent' };
+
+  const result = await initiate(db, commande.id, commande.client_id, {
+    provider: commande.methode_paiement || 'airtel_money',
+    numero_compte: numeroCompte,
+  });
+  return { initie: true, result, raison: null };
+}
+
+/**
  * Vérifie qu'une commande est payée (utilisé en aval).
  */
 async function assertCommandePayee(db, commandeId) {
@@ -241,6 +295,8 @@ module.exports = {
   PAYMENT_MODE,
   isTestPaymentMode,
   initiate,
+  computePayableAmount,
+  autoInitiatePaymentIfReady,
   assertOrderOwnedByClient,
   assertCommandePayee,
   ensurePendingPayment,

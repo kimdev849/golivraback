@@ -456,6 +456,7 @@ async function syncCommandeStatutFromSousCommandes(db, commandeId) {
   // que toutes les sous-commandes ont répondu (plus aucune en_attente) et
   // qu'au moins une est acceptée. On arme paiement_limite_at une seule fois,
   // tant que le paiement n'est pas encore validé (effacé par le webhook).
+  let paiementLimiteArme = false;
   if (
     (next === 'acceptee' || next === 'partiellement_acceptee') &&
     !statuts.includes('en_attente') &&
@@ -477,10 +478,62 @@ async function syncCommandeStatutFromSousCommandes(db, commandeId) {
       patch.paiement_limite_at = new Date(
         Date.now() + PAYMENT_LIMIT_MIN * 60 * 1000,
       ).toISOString();
+      paiementLimiteArme = true;
     }
   }
 
   await db.from('commandes').update(patch).eq('id', commandeId);
+
+  // La commande vient de devenir payable : notification « Paiement requis »
+  // au client + dépôt Mobile Money initié automatiquement (test inclus).
+  // Le client n'a plus qu'à valider la demande sur son téléphone.
+  if (paiementLimiteArme) {
+    await onCommandeDevenuePayable(db, commandeId).catch((err) =>
+      console.warn('[order] paiement auto', commandeId, err?.message || err),
+    );
+  }
+}
+
+/**
+ * La commande est payable (toutes les réponses réunies, au moins un commerce
+ * accepté) : on prévient le client (« Paiement requis — 5 min ») et on
+ * déclenche automatiquement le dépôt Mobile Money vers son numéro enregistré.
+ */
+async function onCommandeDevenuePayable(db, commandeId) {
+  const { data: commande } = await db
+    .from('commandes')
+    .select('id, client_id, total')
+    .eq('id', commandeId)
+    .maybeSingle();
+  if (!commande) return;
+
+  const newPaymentService = require('../payments/services/payment.service');
+  let montant = 0;
+  try {
+    montant = await newPaymentService.computePayableAmount(db, commande);
+  } catch {
+    montant = 0;
+  }
+
+  const { notifyPaymentRequired } = require('./order-notify.service');
+  await notifyPaymentRequired(db, commandeId, commande.client_id, montant).catch((err) =>
+    console.warn('[notify] paiement requis', err?.message || err),
+  );
+
+  const auto = await newPaymentService.autoInitiatePaymentIfReady(db, commandeId).catch((err) => {
+    console.warn('[payment] auto-initiation', commandeId, err?.message || err);
+    return null;
+  });
+
+  // Mode test / simulation : le paiement passe directement à « valide » (aucun
+  // webhook). On notifie la confirmation ici ; en live le dépôt reste
+  // « en_attente » et c'est le webhook PawaPay qui confirme puis notifie.
+  if (auto?.result?.paiement?.statut === 'valide') {
+    const { notifyPaymentConfirmed } = require('./order-notify.service');
+    await notifyPaymentConfirmed(db, commandeId, commande.client_id).catch((err) =>
+      console.warn('[notify] paiement confirmé (auto)', err?.message || err),
+    );
+  }
 }
 
 async function updateSousCommandeStatut(db, sousCommandeId, statut, extra = {}) {
@@ -535,8 +588,9 @@ async function updateSousCommandeStatut(db, sousCommandeId, statut, extra = {}) 
     await onSousCommandeReady(db, sousCommandeId);
   }
 
-  await syncCommandeStatutFromSousCommandes(db, sc.commande_id);
-
+  // La notification de statut passe AVANT la synchro : le client apprend
+  // d'abord que sa commande est acceptée, puis reçoit « Paiement requis »
+  // quand la commande devient payable (déclenché dans la synchro).
   const notifyStatuses = new Set(['acceptee', 'refusee', 'en_preparation', 'prete']);
   if (notifyStatuses.has(statut)) {
     const { notifySousCommandeStatusChange } = require('./order-notify.service');
@@ -544,6 +598,8 @@ async function updateSousCommandeStatut(db, sousCommandeId, statut, extra = {}) 
       console.warn('[notify] sous-commande statut', statut, err?.message || err);
     });
   }
+
+  await syncCommandeStatutFromSousCommandes(db, sc.commande_id);
 
   return updated;
 }
@@ -583,5 +639,6 @@ module.exports = {
   createOrderFromPayload,
   updateSousCommandeStatut,
   syncCommandeStatutFromSousCommandes,
+  onCommandeDevenuePayable,
   mapSousStatutToVendor,
 };
