@@ -143,7 +143,9 @@ async function getCommerceStatsForEnterprise(db, enterpriseId, kind) {
         nom: p.nom,
         image_url: p.image_url ?? null,
         nb_vues: Number(p.nb_vues ?? 0),
+        vues: Number(p.nb_vues ?? 0),
         nb_clics: Number(p.nb_clics ?? 0),
+        clics: Number(p.nb_clics ?? 0),
         nb_ventes: Number(p.nb_ventes ?? 0),
       }));
     const top_cliques = [...list]
@@ -154,7 +156,9 @@ async function getCommerceStatsForEnterprise(db, enterpriseId, kind) {
         nom: p.nom,
         image_url: p.image_url ?? null,
         nb_vues: Number(p.nb_vues ?? 0),
+        vues: Number(p.nb_vues ?? 0),
         nb_clics: Number(p.nb_clics ?? 0),
+        clics: Number(p.nb_clics ?? 0),
         nb_ventes: Number(p.nb_ventes ?? 0),
       }));
     engagement = {
