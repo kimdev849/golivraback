@@ -11,7 +11,7 @@ const {
 } = require('../controllers/product.controller');
 const {
   listProductCategories,
-  createProductCategory,
+  listGlobalCategories,
 } = require('../controllers/product-category.controller');
 const { authMiddleware, optionalAuthMiddleware } = require('../middlewares/auth.middleware');
 const { requireRoles } = require('../middlewares/role.middleware');
@@ -25,13 +25,11 @@ const MERCHANT_ROLES = ['restaurateur', 'commercant', 'admin'];
 router.get('/feed', optionalAuthMiddleware, listProductFeed);
 router.get('/search', optionalAuthMiddleware, searchCatalog);
 
+// Catégories globales du catalogue (GoLivra organise, le vendeur choisit).
+router.get('/categories', optionalAuthMiddleware, listGlobalCategories);
+
+// Rétrocompatibilité : liste globale résolue selon le type d'établissement.
 router.get('/enterprise/:enterpriseId/categories', optionalAuthMiddleware, listProductCategories);
-router.post(
-  '/enterprise/:enterpriseId/categories',
-  authMiddleware,
-  requireRoles(MERCHANT_ROLES),
-  createProductCategory,
-);
 router.get('/enterprise/:enterpriseId', optionalAuthMiddleware, listProducts);
 router.post('/enterprise/:enterpriseId', authMiddleware, requireRoles(MERCHANT_ROLES), createProduct);
 router.patch(

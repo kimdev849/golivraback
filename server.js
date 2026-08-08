@@ -220,6 +220,38 @@ app.use((err, req, res, _next) => {
   });
 });
 
+const GLOBAL_PRODUIT_CATEGORIES = [
+  ['Vêtements', 1],
+  ['Véhicules', 2],
+  ['Appareils électroniques', 3],
+  ['Maison', 4],
+  ['Rénovation intérieure', 5],
+  ['Sports', 6],
+  ['Jeux et jouets', 7],
+  ['Beauté et soins', 8],
+  ['Alimentation', 9],
+  ['Boissons', 10],
+  ['Fournitures de bureau', 11],
+  ['Jardin et extérieur', 12],
+  ['Instruments de musique', 13],
+  ['Articles gratuits', 14],
+  ['Autres', 99],
+];
+
+const GLOBAL_MENU_CATEGORIES = [
+  ['Pizzas & Pâtes', 1],
+  ['Burgers & Fast-food', 2],
+  ['Grillades & Brochettes', 3],
+  ['Poulet', 4],
+  ['Poissons & Fruits de mer', 5],
+  ['Plats africains', 6],
+  ['Sandwichs', 7],
+  ['Desserts & Pâtisseries', 8],
+  ['Boissons & Jus', 9],
+  ['Soupes', 10],
+  ['Autres', 99],
+];
+
 const RESTAURANT_CATEGORIES = [
   ['Restaurant africain', 1],
   ['Fast Food', 2],
@@ -260,8 +292,23 @@ async function ensureBaseCategories() {
   try {
     await ensureCategoryRows(db, 'categories_restaurants', RESTAURANT_CATEGORIES);
     await ensureCategoryRows(db, 'categories_boutiques', BOUTIQUE_CATEGORIES);
+    // Référentiel global du catalogue : GoLivra organise, le vendeur choisit.
+    // Idempotent — la migration amendments-categories-globales.sql crée les
+    // tables sur les bases existantes avant tout appel à ce seed.
+    await ensureCategoryRows(db, 'categories_produits', GLOBAL_PRODUIT_CATEGORIES);
+    await ensureCategoryRows(db, 'categories_menus', GLOBAL_MENU_CATEGORIES);
   } catch (e) {
-    console.warn('[golivra] ensureBaseCategories:', e.message);
+    const msg = String(e?.message || e);
+    console.warn('[golivra] ensureBaseCategories:', msg);
+    // Si les tables globales n'existent pas, la liste des catégories est vide
+    // côté vendeur : on guide vers la migration au lieu d'échouer en silence.
+    if (/categories_produits|categories_menus|relation .* does not exist/i.test(msg)) {
+      console.warn(
+        '[golivra] ⚠️ Tables de catégories globales absentes en base. ' +
+          'Lancez : cd golivraback && npm run migrate:categories ' +
+          '(ou collez sql/amendments-categories-globales.sql dans Supabase SQL Editor).',
+      );
+    }
   }
 }
 

@@ -428,9 +428,34 @@ async function patchEnterprise(req, res, next) {
           Object.assign(updates, logoFields);
         }
       }
+      // Temps de préparation (géré par le commerce) : restaurant →
+      // delai_preparation_min, boutique → delai_livraison_min (le délai
+      // boutique sert de temps de préparation du colis). Borné 5–180 min.
+      // Accepte les deux conventions de nommage : `delaiPreparationMin`
+      // (app mobile actuelle) et les variantes snake_case du nom de colonne
+      // (rétrocompatibilité avec les anciennes versions de client).
+      // La variante camelCase, si présente, a priorité.
+      let prepRaw = body.delaiPreparationMin;
+      if (prepRaw === undefined) {
+        prepRaw = table === 'restaurants' ? body.delai_preparation_min : body.delai_livraison_min;
+      }
+      if (prepRaw !== undefined) {
+        const v = Number(prepRaw);
+        if (!Number.isInteger(v) || v < 5 || v > 180) {
+          throw createHttpError(400, 'Temps de préparation invalide (5 à 180 minutes).');
+        }
+        updates[table === 'restaurants' ? 'delai_preparation_min' : 'delai_livraison_min'] = v;
+      }
 
-      if (Object.keys(updates).length <= 1) {
-        throw createHttpError(400, 'Aucune modification à enregistrer.');
+      // Un seul champ métier suffit (ex. temps de préparation) : on n'exige
+      // pas de multi-champs. On rejette seulement un PATCH totalement vide
+      // (rien d'autre que updated_at).
+      const meaningfulKeys = Object.keys(updates).filter((k) => k !== 'updated_at');
+      if (meaningfulKeys.length === 0) {
+        throw createHttpError(
+          400,
+          'Aucune modification à enregistrer (aucun champ reconnu dans la requête).',
+        );
       }
 
       const { data, error } = await db.from(table).update(updates).eq('id', enterpriseId).select('*').single();

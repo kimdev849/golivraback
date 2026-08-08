@@ -1,6 +1,7 @@
 const { getDb } = require('../config/db');
 const { createHttpError, requireFields } = require('../utils/http');
 const { getUserScores, personalizeResults } = require('../services/personalization.service');
+const { loadCategoryNameMap } = require('./product-category.controller');
 
 const ACTIVE = 'active';
 
@@ -201,7 +202,7 @@ function parseImagesUrls(imagesUrls, imageUrl) {
   return list;
 }
 
-function mapPlatToProduct(p, enterpriseId) {
+function mapPlatToProduct(p, enterpriseId, categoryNames) {
   let stock = null;
   if (p.stock !== null && p.stock !== undefined) stock = Math.max(0, Number(p.stock));
   if (p.est_disponible === false) stock = 0;
@@ -221,6 +222,7 @@ function mapPlatToProduct(p, enterpriseId) {
     image_url: p.image_url ?? null,
     images_urls: normalizeImagesUrls(p.images_urls),
     categorie_id: p.categorie_id ?? null,
+    categorie_nom: p.categorie_id && categoryNames ? categoryNames.get(p.categorie_id) ?? null : null,
     tags: Array.isArray(p.tags) ? p.tags : [],
     allergenes: Array.isArray(p.allergenes) ? p.allergenes : [],
     kind: 'plat',
@@ -231,7 +233,7 @@ function mapPlatToProduct(p, enterpriseId) {
   };
 }
 
-function mapArticleToProduct(a, enterpriseId) {
+function mapArticleToProduct(a, enterpriseId, categoryNames) {
   let stock = null;
   if (a.stock !== null && a.stock !== undefined) stock = Math.max(0, Number(a.stock));
   if (!a.est_disponible) stock = 0;
@@ -255,6 +257,7 @@ function mapArticleToProduct(a, enterpriseId) {
     reference: a.reference ?? null,
     unite: a.unite ?? null,
     categorie_id: a.categorie_id ?? null,
+    categorie_nom: a.categorie_id && categoryNames ? categoryNames.get(a.categorie_id) ?? null : null,
     tags: Array.isArray(a.tags) ? a.tags : [],
     type_produit: a.type_produit ?? null,
     etat_produit: a.etat_produit ?? null,
@@ -445,14 +448,15 @@ async function listProducts(req, res, next) {
     const { kind, row } = resolved;
     const visible = row.statut === ACTIVE;
     if (!visible && !canManageEstablishment(req, row)) throw createHttpError(404, 'Établissement introuvable');
+    const categoryNames = await loadCategoryNameMap(db);
     if (kind === 'restaurant') {
       const { data, error } = await db.from('plats').select('*').eq('restaurant_id', enterpriseId).order('nom');
       if (error) throw error;
-      return res.json((data || []).map((p) => mapPlatToProduct(p, enterpriseId)));
+      return res.json((data || []).map((p) => mapPlatToProduct(p, enterpriseId, categoryNames)));
     }
     const { data, error } = await db.from('articles').select('*').eq('boutique_id', enterpriseId).order('nom');
     if (error) throw error;
-    return res.json((data || []).map((a) => mapArticleToProduct(a, enterpriseId)));
+    return res.json((data || []).map((a) => mapArticleToProduct(a, enterpriseId, categoryNames)));
   } catch (error) { return next(error); }
 }
 
@@ -467,6 +471,7 @@ async function listProductFeed(req, res, next) {
     const includePlats = !type || type === 'plat' || type === 'all';
     const includeArticles = !type || type === 'article' || type === 'all';
     const out = [];
+    const categoryNames = await loadCategoryNameMap(db);
     if (includePlats) {
       const restaurants = await selectActiveEstablishments(db, 'restaurants', { villeId });
       const restById = new Map((restaurants || []).map((r) => [r.id, r]));
@@ -479,7 +484,7 @@ async function listProductFeed(req, res, next) {
           for (const p of rows) {
             const rest = restById.get(p.restaurant_id);
             if (!rest) continue;
-            out.push({ ...mapPlatToProduct(p, p.restaurant_id), enterprise_id: p.restaurant_id, enterprise_nom: rest.nom || null, enterprise_type: 'restaurant', enterprise_image_url: enterpriseImageUrl(rest) });
+            out.push({ ...mapPlatToProduct(p, p.restaurant_id, categoryNames), enterprise_id: p.restaurant_id, enterprise_nom: rest.nom || null, enterprise_type: 'restaurant', enterprise_image_url: enterpriseImageUrl(rest) });
           }
         } catch (subErr) {
           // Un échec sur les plats ne doit pas faire planter tout le feed.
@@ -499,7 +504,7 @@ async function listProductFeed(req, res, next) {
           for (const a of rows) {
             const bou = boutById.get(a.boutique_id);
             if (!bou) continue;
-            out.push({ ...mapArticleToProduct(a, a.boutique_id), enterprise_id: a.boutique_id, enterprise_nom: bou.nom || null, enterprise_type: 'boutique', enterprise_image_url: enterpriseImageUrl(bou) });
+            out.push({ ...mapArticleToProduct(a, a.boutique_id, categoryNames), enterprise_id: a.boutique_id, enterprise_nom: bou.nom || null, enterprise_type: 'boutique', enterprise_image_url: enterpriseImageUrl(bou) });
           }
         } catch (subErr) {
           // Un échec sur les articles ne doit pas faire planter tout le feed.
@@ -538,6 +543,7 @@ async function searchCatalog(req, res, next) {
     const includeBoutiques = type === 'all' || type === 'boutique';
     const includePlats = type === 'all' || type === 'plat';
     const includeArticles = type === 'all' || type === 'article';
+    const categoryNames = includePlats || includeArticles ? await loadCategoryNameMap(db) : null;
     if (includeRestaurants) {
       const rows = await searchActiveEstablishments(db, 'restaurants', pattern, Math.min(limit, 12));
       for (const r of rows || []) enterprises.push({ id: r.id, nom: r.nom, type: 'restaurant', description: r.description ?? null, adresse: r.adresse_ligne1 ?? null, image_url: enterpriseImageUrl(r), categorie_id: r.categorie_id ?? null });
@@ -562,7 +568,7 @@ async function searchCatalog(req, res, next) {
         for (const p of platsRows) {
           const rest = restById.get(p.restaurant_id);
           if (!rest) continue;
-          products.push({ ...mapPlatToProduct(p, p.restaurant_id), enterprise_id: p.restaurant_id, enterprise_nom: rest.nom || null, enterprise_type: 'restaurant', enterprise_image_url: enterpriseImageUrl(rest) });
+          products.push({ ...mapPlatToProduct(p, p.restaurant_id, categoryNames), enterprise_id: p.restaurant_id, enterprise_nom: rest.nom || null, enterprise_type: 'restaurant', enterprise_image_url: enterpriseImageUrl(rest) });
         }
       }
     }
@@ -582,7 +588,7 @@ async function searchCatalog(req, res, next) {
         for (const a of articlesRows) {
           const bou = boutById.get(a.boutique_id);
           if (!bou) continue;
-          products.push({ ...mapArticleToProduct(a, a.boutique_id), enterprise_id: a.boutique_id, enterprise_nom: bou.nom || null, enterprise_type: 'boutique', enterprise_image_url: enterpriseImageUrl(bou) });
+          products.push({ ...mapArticleToProduct(a, a.boutique_id, categoryNames), enterprise_id: a.boutique_id, enterprise_nom: bou.nom || null, enterprise_type: 'boutique', enterprise_image_url: enterpriseImageUrl(bou) });
         }
       }
     }
@@ -619,7 +625,8 @@ async function createProduct(req, res, next) {
       if (stockIllimite === true) insertPlat.stock = null;
       else if (stock !== undefined && stock !== null && stock !== '') insertPlat.stock = Math.max(0, Math.floor(Number(stock)));
       const data = await insertPlatRow(db, insertPlat);
-      return res.status(201).json(mapPlatToProduct(data, enterpriseId));
+      const categoryNames = await loadCategoryNameMap(db);
+      return res.status(201).json(mapPlatToProduct(data, enterpriseId, categoryNames));
     }
     if (req.auth.role !== 'admin' && req.auth.role !== 'commercant') throw createHttpError(403, 'Seul un commerçant peut ajouter des articles.');
     const insertArt = { boutique_id: enterpriseId, nom: nomClean, description: descriptionClean, prix: Number(prixClean), stock: stockIllimite ? null : (stock === undefined || stock === null ? null : Math.max(0, Math.floor(Number(stock)))), est_disponible: estDisponible !== undefined ? Boolean(estDisponible) : true, image_url: imgUrl, est_en_vedette: Boolean(estEnVedette), options: normalizedOptions !== undefined ? normalizedOptions : options ?? null };
@@ -629,7 +636,8 @@ async function createProduct(req, res, next) {
     if (unite) insertArt.unite = String(unite).trim();
     applyArticleCatalogFields(insertArt, { tags, imagesUrls, imageUrl: imgUrl, promoDebutAt, promoFinAt, typeProduit, etatProduit, marque, poidsKg, dimensions, estDisponible });
     const data = await insertArticleRow(db, insertArt);
-    return res.status(201).json(mapArticleToProduct(data, enterpriseId));
+    const categoryNames = await loadCategoryNameMap(db);
+    return res.status(201).json(mapArticleToProduct(data, enterpriseId, categoryNames));
   } catch (error) { return next(error); }
 }
 
@@ -671,7 +679,8 @@ async function updateProduct(req, res, next) {
       const imagesPatch = { imagesUrls: imagesUrls !== undefined ? imagesUrls : normalizeImagesUrls(existing.images_urls), imageUrl: imageUrl !== undefined ? parseImageUrl(imageUrl) : existing.image_url };
       applyPlatCatalogFields(patch, { ...req.body, ...imagesPatch });
       const data = await updatePlatRow(db, productId, patch);
-      return res.json(mapPlatToProduct(data, enterpriseId));
+      const categoryNames = await loadCategoryNameMap(db);
+      return res.json(mapPlatToProduct(data, enterpriseId, categoryNames));
     }
     if (req.auth.role !== 'admin' && req.auth.role !== 'commercant') throw createHttpError(403, 'Seul un commerçant peut modifier des articles.');
     const patch = {};
@@ -691,7 +700,8 @@ async function updateProduct(req, res, next) {
     const imagesPatch = { imagesUrls: imagesUrls !== undefined ? imagesUrls : normalizeImagesUrls(existing.images_urls), imageUrl: imageUrl !== undefined ? parseImageUrl(imageUrl) : existing.image_url };
     applyArticleCatalogFields(patch, { ...req.body, ...imagesPatch });
     const data = await updateArticleRow(db, productId, patch);
-    return res.json(mapArticleToProduct(data, enterpriseId));
+    const categoryNames = await loadCategoryNameMap(db);
+    return res.json(mapArticleToProduct(data, enterpriseId, categoryNames));
   } catch (error) { return next(error); }
 }
 

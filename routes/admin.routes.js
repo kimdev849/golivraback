@@ -1,6 +1,7 @@
 const express = require('express');
 const locationAdmin = require('../controllers/admin-location.controller');
 const campaignAdmin = require('../controllers/admin-campaign.controller');
+const categoryAdmin = require('../controllers/product-category.controller');
 
 const {
   getAdminStats,
@@ -87,6 +88,12 @@ router.get('/campagnes/:campagneId', ...adminOnly, campaignAdmin.getCampagneDeta
 router.post('/campagnes', ...adminOnly, campaignAdmin.postCampagne);
 router.patch('/campagnes/:campagneId', ...adminOnly, campaignAdmin.patchCampagne);
 router.delete('/campagnes/:campagneId', ...adminOnly, campaignAdmin.removeCampagne);
+
+// ── Gestion des catégories globales (produits / menus) ─────────────────────
+router.get('/categories', ...adminOnly, categoryAdmin.listAdminCategories);
+router.post('/categories', ...adminOnly, categoryAdmin.createAdminCategory);
+router.patch('/categories/:categoryId', ...adminOnly, categoryAdmin.updateAdminCategory);
+router.delete('/categories/:categoryId', ...adminOnly, categoryAdmin.deleteAdminCategory);
 
 // ── Gestion des pays / villes / arrondissements ────────────────────────────
 router.get('/locations/pays', ...adminOnly, locationAdmin.getPaysList);
