@@ -215,7 +215,11 @@ async function mapVendorOrderRow(db, sc, commande, client) {
     clientTel: client?.telephone || '',
     adresse: addr,
     creeLeLabel: formatDateLabel(commande.created_at),
-    prixTotal: Number(sc.total ?? commande.total ?? 0),
+    // Part du vendeur = SOUS-TOTAL PRODUITS uniquement (jamais les frais de
+    // livraison : cet argent revient au livreur / à GoLivra logistique, pas au
+    // commerce). sc.total inclut la livraison → on utilise sc.sous_total.
+    prixTotal: Number(sc.sous_total ?? sc.total ?? commande.total ?? 0),
+    sousTotal: Number(sc.sous_total ?? 0),
     fraisLivraison: Number(sc.frais_livraison ?? 0),
     noteClient: commande.note_client || undefined,
     lignes: (items || []).map((it) => ({

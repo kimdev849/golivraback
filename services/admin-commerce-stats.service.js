@@ -11,27 +11,36 @@ function startOfPeriod(days) {
   return d.toISOString();
 }
 
-function aggregateForPeriod(rows, items, sinceIso) {
+function aggregateForPeriod(rows, items, sinceIso, isPaid) {
   const filtered = sinceIso ? rows.filter((r) => r.created_at >= sinceIso) : rows;
-  const scIds = new Set(filtered.map((r) => r.id));
 
-  let caProduits = 0;
-  let fraisLivraison = 0;
-  let totalClient = 0;
+  // Décomptes (total / livrées / annulées / en cours) : toutes les commandes de
+  // la période.
   let commandes = 0;
   let livrees = 0;
   let annulees = 0;
   let enCours = 0;
-
   for (const sc of filtered) {
     commandes += 1;
-    caProduits += Number(sc.sous_total ?? 0);
-    fraisLivraison += Number(sc.frais_livraison ?? 0);
-    totalClient += Number(sc.total ?? 0);
     const st = sc.statut || '';
     if (st === 'livree') livrees += 1;
     else if (st === 'annulee' || st === 'refusee') annulees += 1;
     else enCours += 1;
+  }
+
+  // CA = UNIQUEMENT les commandes PAYÉES et non annulées/refusées (l'argent
+  // n'est réellement gagné qu'au paiement).
+  const paidRows = filtered.filter((r) => isPaid(r) && r.statut !== 'annulee' && r.statut !== 'refusee');
+  const scIds = new Set(paidRows.map((r) => r.id));
+
+  let caProduits = 0;
+  let fraisLivraison = 0;
+  let totalClient = 0;
+  for (const sc of paidRows) {
+    // CA produits = part du vendeur (sous_total), jamais les frais de livraison.
+    caProduits += Number(sc.sous_total ?? 0);
+    fraisLivraison += Number(sc.frais_livraison ?? 0);
+    totalClient += Number(sc.total ?? 0);
   }
 
   const productMap = new Map();
@@ -58,7 +67,7 @@ function aggregateForPeriod(rows, items, sinceIso) {
     ca_produits_fcfa: caProduits,
     frais_livraison_fcfa: fraisLivraison,
     total_paye_client_fcfa: totalClient,
-    panier_moyen_fcfa: commandes > 0 ? Math.round(caProduits / commandes) : 0,
+    panier_moyen_fcfa: paidRows.length > 0 ? Math.round(caProduits / paidRows.length) : 0,
     top_produits,
   };
 }
@@ -68,13 +77,29 @@ async function getCommerceStatsForEnterprise(db, enterpriseId, kind) {
 
   const { data: sousCommandes, error } = await db
     .from('sous_commandes')
-    .select('id, statut, sous_total, frais_livraison, total, remise, created_at')
+    .select('id, commande_id, statut, sous_total, frais_livraison, total, remise, created_at')
     .eq(fk, enterpriseId)
     .order('created_at', { ascending: false });
   if (error) throw error;
 
   const rows = sousCommandes || [];
   const scIds = rows.map((r) => r.id);
+
+  // Seules les commandes PAYÉES comptent dans le CA (le client paie après
+  // acceptation ; tant qu'il n'a pas payé, rien n'est gagné).
+  const commandeIds = [...new Set(rows.map((r) => r.commande_id).filter(Boolean))];
+  const paidCommandeIds = new Set();
+  if (commandeIds.length > 0) {
+    const { data: paiements, error: payErr } = await db
+      .from('paiements')
+      .select('commande_id, statut')
+      .in('commande_id', commandeIds);
+    if (payErr) throw payErr;
+    for (const p of paiements || []) {
+      if (p.statut === 'valide') paidCommandeIds.add(p.commande_id);
+    }
+  }
+  const isPaid = (r) => r.commande_id != null && paidCommandeIds.has(r.commande_id);
   let items = [];
   if (scIds.length > 0) {
     const { data: itemRows, error: itemErr } = await db
@@ -86,10 +111,10 @@ async function getCommerceStatsForEnterprise(db, enterpriseId, kind) {
   }
 
   const periodes = {
-    j7: aggregateForPeriod(rows, items, startOfPeriod(7)),
-    j30: aggregateForPeriod(rows, items, startOfPeriod(30)),
-    j90: aggregateForPeriod(rows, items, startOfPeriod(90)),
-    total: aggregateForPeriod(rows, items, null),
+    j7: aggregateForPeriod(rows, items, startOfPeriod(7), isPaid),
+    j30: aggregateForPeriod(rows, items, startOfPeriod(30), isPaid),
+    j90: aggregateForPeriod(rows, items, startOfPeriod(90), isPaid),
+    total: aggregateForPeriod(rows, items, null, isPaid),
   };
 
   // ----- Engagement (vues / clics) - non périodique, cumulatif sur la durée de vie du produit -----
