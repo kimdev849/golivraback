@@ -335,7 +335,7 @@ async function getOrders(req, res, next) {
     const commandeIds = list.map((c) => c.id);
     const { data: allScs, error: scErr } = await db
       .from('sous_commandes')
-      .select('id, commande_id, restaurant_id, boutique_id, statut')
+      .select('id, commande_id, restaurant_id, boutique_id, statut, raison_refus')
       .in('commande_id', commandeIds);
     if (scErr) throw scErr;
 
@@ -364,14 +364,21 @@ async function getOrders(req, res, next) {
       const eid = first ? first.restaurant_id || first.boutique_id : null;
 
       const toRate = scs.find((s) => s.statut === 'livree' && !ratedSet.has(s.id));
-      const extra = toRate
-        ? {
-            peut_noter: true,
-            sous_commande_id: toRate.id,
-            entreprise_type: toRate.restaurant_id ? 'restaurant' : 'boutique',
-            entreprise_id: toRate.restaurant_id || toRate.boutique_id || eid,
-          }
-        : { peut_noter: false };
+      // Raison d'annulation + détails pour un affichage client humain :
+      // « Pas de réponse de la boutique », « Commande refusée », « Paiement
+      // non effectué », « Vous avez annulé votre commande »…
+      const extra = {
+        peut_noter: false,
+        annulation_motif: c.annulation_motif ?? null,
+        sous_statuts: scs.map((s) => s.statut),
+        commerce_type: first ? (first.restaurant_id ? 'restaurant' : 'boutique') : null,
+      };
+      if (toRate) {
+        extra.peut_noter = true;
+        extra.sous_commande_id = toRate.id;
+        extra.entreprise_type = toRate.restaurant_id ? 'restaurant' : 'boutique';
+        extra.entreprise_id = toRate.restaurant_id || toRate.boutique_id || eid;
+      }
 
       out.push(mapCommandeListRow(c, eid, extra));
     }

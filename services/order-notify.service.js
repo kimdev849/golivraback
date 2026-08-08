@@ -78,10 +78,30 @@ async function notifyVendors(db, vendorOwnerIds, payload) {
 }
 
 async function notifyOrderCreated(db, commandeId, clientId) {
+  // Parle de « la boutique » ou « le restaurant » selon le type de commerce.
+  const { data: scs } = await db
+    .from('sous_commandes')
+    .select('id, restaurant_id, boutique_id')
+    .eq('commande_id', commandeId)
+    .limit(1);
+  const sc = (scs || [])[0];
+  const isResto = Boolean(sc?.restaurant_id);
+  const qui = isResto ? 'Le restaurant' : 'La boutique';
+  let nom = null;
+  if (sc?.restaurant_id) {
+    const { data: r } = await db.from('restaurants').select('nom').eq('id', sc.restaurant_id).maybeSingle();
+    nom = r?.nom ?? null;
+  } else if (sc?.boutique_id) {
+    const { data: b } = await db.from('boutiques').select('nom').eq('id', sc.boutique_id).maybeSingle();
+    nom = b?.nom ?? null;
+  }
+  const corps = nom
+    ? `Nous avons envoyé votre commande à ${nom}. ${qui} a 5 minutes pour la confirmer. Vous ne serez débité qu'après acceptation.`
+    : `Nous avons envoyé votre commande. ${qui} a 5 minutes pour la confirmer. Vous ne serez débité qu'après acceptation.`;
   await notifyClient(db, clientId, {
     type: 'commande_nouvelle',
-    titre: 'Commande envoyée',
-    corps: "Votre commande est en attente de confirmation. Les commerces ont 5 minutes pour accepter.",
+    titre: 'Commande envoyée 🛍️',
+    corps,
     data: { commande_id: commandeId, action: 'open_orders' },
   });
 }
@@ -139,18 +159,19 @@ async function notifySousCommandeStatusChange(db, sousCommandeId, statut) {
   if (statut === 'acceptee') {
     await notifyClient(db, ctx.clientId, {
       type: 'commande_acceptee',
-      titre: 'Commande acceptée',
-      corps: `${ctx.commerceNom} a accepté votre commande.`,
+      titre: 'Bonne nouvelle ! 🎉',
+      corps: `${ctx.commerceNom} a accepté votre commande. Confirmez le paiement pour lancer la préparation.`,
       data: { ...base, action: 'open_orders' },
     });
     return;
   }
 
   if (statut === 'refusee') {
+    const qui = ctx.sc?.restaurant_id ? 'Le restaurant' : 'La boutique';
     await notifyClient(db, ctx.clientId, {
       type: 'commande_refusee',
       titre: 'Commande refusée',
-      corps: `${ctx.commerceNom} n'a pas pu traiter votre commande.`,
+      corps: `${ctx.commerceNom || qui} ne peut pas préparer votre commande cette fois-ci. Vous n'avez rien payé.`,
       data: { ...base, action: 'open_orders' },
     });
     return;
@@ -200,23 +221,26 @@ async function notifyOrderExpired(
     .maybeSingle();
   if (!commande) return;
 
-  const corpsClient = raisonClient
-    ? raisonClient
-    : remboursementEnCours
-      ? "La boutique n'a pas pu confirmer votre commande. Votre remboursement est en cours."
-      : "La boutique n'a pas pu confirmer votre commande. Elle a été annulée — vous pouvez choisir une autre boutique.";
-  await notifyClient(db, commande.client_id, {
-    type: 'commande_expiree',
-    titre: raisonClient ? 'Commande annulée' : 'Commande expirée',
-    corps: corpsClient,
-    data: { commande_id: commandeId, action: 'open_orders' },
-  });
-
   // Vendeurs concernés : la commande liée à leur commerce a expiré / été annulée.
+  // Utilisé aussi pour parler de « la boutique » ou « le restaurant » au client.
   const { data: sous } = await db
     .from('sous_commandes')
     .select('id, restaurant_id, boutique_id')
     .eq('commande_id', commandeId);
+  const premier = (sous || [])[0];
+  const de = premier?.restaurant_id ? 'du restaurant' : 'de la boutique';
+
+  const corpsClient = raisonClient
+    ? raisonClient
+    : remboursementEnCours
+      ? `Nous sommes désolés, ${de} n'a pas répondu à temps. Votre commande a donc été annulée et le paiement est en cours de remboursement.`
+      : `Nous sommes désolés, ${de} n'a pas répondu à temps. Votre commande a donc été annulée — aucun paiement n'a été effectué.`;
+  await notifyClient(db, commande.client_id, {
+    type: 'commande_expiree',
+    titre: raisonClient ? 'Commande annulée' : 'Commande non confirmée',
+    corps: corpsClient,
+    data: { commande_id: commandeId, action: 'open_orders' },
+  });
   const ownerIds = new Set();
   for (const sc of sous || []) {
     if (sc.restaurant_id) {
