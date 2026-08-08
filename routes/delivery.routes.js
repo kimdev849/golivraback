@@ -15,6 +15,7 @@ const {
 const {
   createVendorExternalDelivery,
   listVendorExternalDeliveriesHandler,
+  getExternalDeliveryPaymentStatusHandler,
 } = require('../controllers/vendor-delivery.controller');
 
 const router = express.Router();
@@ -32,6 +33,12 @@ router.post(
   authMiddleware,
   requireRoles(['restaurateur', 'commercant', 'admin']),
   createVendorExternalDelivery,
+);
+router.get(
+  '/vendor/externe/:deliveryId/payment-status',
+  authMiddleware,
+  requireRoles(['restaurateur', 'commercant', 'admin']),
+  getExternalDeliveryPaymentStatusHandler,
 );
 router.get('/courier/me', authMiddleware, requireRoles(['livreur', 'admin']), getCourierProfile);
 router.get('/courier/missions', authMiddleware, requireRoles(['livreur', 'admin']), listCourierMissions);

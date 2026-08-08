@@ -1,6 +1,8 @@
 const { createHttpError } = require('../utils/http');
 const { formatAddressText } = require('./address.service');
 const { resolveDeliveryFeeForEstablishment, getPricingConfig, splitDeliveryFee } = require('./pricing.service');
+const { resolveDeliveryPriceForQuartier } = require('./zones.service');
+const pawapay = require('../payments/services/pawapay.service');
 
 function snapshotFromText(text) {
   const t = String(text || '').trim();
@@ -91,7 +93,7 @@ async function assertVendorOwnsEstablishment(db, userId, establishmentId, establ
 }
 
 async function loadEstablishmentPickup(db, establishmentId, establishmentType) {
-  const cols = 'id, nom, adresse_ligne1, adresse_quartier, adresse_ville, frais_livraison';
+  const cols = 'id, nom, telephone, adresse_ligne1, adresse_quartier, adresse_ville, frais_livraison';
   if (establishmentType === 'restaurant') {
     const { data, error } = await db.from('restaurants').select(cols).eq('id', establishmentId).maybeSingle();
     if (error) throw error;
@@ -125,6 +127,10 @@ function mapDirectDeliveryRow(liv, establishmentNom) {
     payeur_type: payeurSnap.payeur_type ?? null,
     note: liv.note ?? null,
     establishment_nom: establishmentNom,
+    paiement_statut: payeurSnap.paiement_statut ?? null,
+    paiement_deposit_id: payeurSnap.paiement_deposit_id ?? null,
+    methode_paiement: payeurSnap.methode_paiement ?? liv.methode_paiement ?? null,
+    paye_at: payeurSnap.paye_at ?? null,
     livreur_id: liv.livreur_id,
     created_at: liv.created_at,
     attribuee_at: liv.attribuee_at,
@@ -133,7 +139,12 @@ function mapDirectDeliveryRow(liv, establishmentNom) {
 }
 
 /**
- * Livraison directe créée par un commerce — le commerce est payeur de la livraison.
+ * Livraison directe créée par un commerce — le commerce paie les frais
+ * (Mobile Money) AVANT que la course ne soit ouverte aux livreurs.
+ *  - prix calculé selon la ZONE / l'arrondissement de livraison choisi ;
+ *  - dépôt PawaPay initié sur le téléphone du commerce ;
+ *  - mode test/simulation → paiement validé immédiatement ; live → confirmé
+ *    par le webhook PawaPay (l'app suit le statut via /payment-status).
  */
 async function createExternalDelivery(db, userId, payload) {
   const {
@@ -143,6 +154,7 @@ async function createExternalDelivery(db, userId, payload) {
     clientTelephone,
     note,
     methodePaiement,
+    telephonePaiement,
   } = payload;
 
   if (!establishmentId || !establishmentType) {
@@ -154,6 +166,9 @@ async function createExternalDelivery(db, userId, payload) {
   if (!clientTelephone || !String(clientTelephone).trim()) {
     throw createHttpError(400, 'Le téléphone du client est requis.');
   }
+  if (methodePaiement !== 'mtn_money' && methodePaiement !== 'airtel_money') {
+    throw createHttpError(400, 'Choisissez une méthode de paiement (Airtel Money ou MTN MoMo).');
+  }
 
   await assertVendorOwnsEstablishment(db, userId, establishmentId, establishmentType);
   const { row: est } = await loadEstablishmentPickup(db, establishmentId, establishmentType);
@@ -163,14 +178,52 @@ async function createExternalDelivery(db, userId, payload) {
     throw createHttpError(400, 'Adresse de livraison invalide.');
   }
 
-  const fraisLivraison = await resolveDeliveryFeeForEstablishment(db, est);
+  // Prix selon la ZONE / l'arrondissement de livraison (fallback : frais du commerce).
+  let fraisLivraison = null;
+  try {
+    const zonePrice = await resolveDeliveryPriceForQuartier(db, livraisonSnap.quartier || null);
+    if (zonePrice?.price_fcfa != null && zonePrice.price_fcfa > 0) {
+      fraisLivraison = Math.round(zonePrice.price_fcfa);
+    }
+  } catch {
+    fraisLivraison = null;
+  }
+  if (fraisLivraison == null || fraisLivraison <= 0) {
+    fraisLivraison = await resolveDeliveryFeeForEstablishment(db, est);
+  }
+
   const config = await getPricingConfig(db);
   const deliverySplit = splitDeliveryFee(fraisLivraison, config);
+
+  // ── Paiement Mobile Money (PawaPay) sur le téléphone du commerce ──────────
+  const numeroCompte = String(telephonePaiement || est.telephone || '').trim();
+  if (!numeroCompte) {
+    throw createHttpError(400, 'Téléphone de paiement du commerce introuvable.');
+  }
+  const depositId = newDepositId();
+  const deposit = await pawapay.initiateDeposit({
+    depositId,
+    montantFcfa: fraisLivraison,
+    currency: 'XAF',
+    methode: methodePaiement,
+    numeroCompte,
+    pays: 'CG',
+  });
+  if (!deposit.ok) {
+    throw createHttpError(502, 'Paiement indisponible pour le moment. Réessayez.');
+  }
+  // Test / simulation → validé immédiatement ; live → confirmé par webhook.
+  const paiementStatut = deposit.simulated ? 'valide' : 'en_attente';
+
   livraisonSnap.payeur_type = 'commerce';
   livraisonSnap.createur_type = 'commerce';
   livraisonSnap.createur_utilisateur_id = userId;
   livraisonSnap.montant_livraison = fraisLivraison;
-  livraisonSnap.methode_paiement = methodePaiement || null;
+  livraisonSnap.methode_paiement = methodePaiement;
+  livraisonSnap.telephone_paiement = numeroCompte;
+  livraisonSnap.paiement_deposit_id = depositId;
+  livraisonSnap.paiement_statut = paiementStatut;
+  if (paiementStatut === 'valide') livraisonSnap.paye_at = new Date().toISOString();
 
   const insertRow = {
     type_livraison: 'externe',
@@ -197,8 +250,18 @@ async function createExternalDelivery(db, userId, payload) {
   const { data: created, error } = await db.from('livraisons').insert(insertRow).select('*').single();
   if (error) throw error;
 
-  const { notifyAvailableCouriersForDelivery } = require('./notification.service');
-  await notifyAvailableCouriersForDelivery(db, created.id).catch(() => {});
+  const { data: refreshed } = await db
+    .from('livraisons')
+    .select('*')
+    .eq('id', created.id)
+    .maybeSingle();
+  const livraison = mapDirectDeliveryRow(refreshed || created, est.nom);
+
+  // La course n'est ouverte aux livreurs qu'une fois le paiement confirmé.
+  if (paiementStatut === 'valide') {
+    await confirmExternalDeliveryPayment(db, created.id).catch(() => {});
+  }
+
   const { notifyAllAdmins } = require('./admin-notify.service');
   await notifyAllAdmins(db, {
     type: 'livraison_externe',
@@ -207,9 +270,142 @@ async function createExternalDelivery(db, userId, payload) {
     data: { livraison_id: created.id, action: 'open_delivery' },
   }).catch(() => undefined);
 
-  const { data: refreshed } = await db.from('livraisons').select('*').eq('id', created.id).maybeSingle();
+  return {
+    livraison,
+    paiement: {
+      depositId,
+      simulation: deposit.simulated === true,
+      statut: paiementStatut,
+      montant_fcfa: fraisLivraison,
+      methode: methodePaiement,
+    },
+  };
+}
 
-  return mapDirectDeliveryRow(refreshed || created, est.nom);
+function newDepositId() {
+  return `dp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+async function findEstablishmentOwnerId(db, liv) {
+  const table = liv.restaurant_id ? 'restaurants' : 'boutiques';
+  const id = liv.restaurant_id || liv.boutique_id;
+  if (!id) return null;
+  const { data } = await db.from(table).select('proprietaire_id').eq('id', id).maybeSingle();
+  return data?.proprietaire_id || null;
+}
+
+/**
+ * Confirme le paiement d'une livraison externe puis ouvre la course aux
+ * livreurs disponibles et prévient le commerce.
+ * Appelé en mode test (simulation) à la création, et par le webhook PawaPay en live.
+ */
+async function confirmExternalDeliveryPayment(db, deliveryId, { depositId } = {}) {
+  const { data: liv, error } = await db
+    .from('livraisons')
+    .select('*')
+    .eq('id', deliveryId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!liv) throw createHttpError(404, 'Livraison introuvable.');
+
+  const snap =
+    liv.adresse_livraison_snapshot && typeof liv.adresse_livraison_snapshot === 'object'
+      ? { ...liv.adresse_livraison_snapshot }
+      : {};
+  if (snap.paiement_statut === 'valide') return liv;
+  snap.paiement_statut = 'valide';
+  snap.paye_at = snap.paye_at || new Date().toISOString();
+  if (depositId) snap.paiement_deposit_id = snap.paiement_deposit_id || depositId;
+
+  const { error: upErr } = await db
+    .from('livraisons')
+    .update({ adresse_livraison_snapshot: snap, updated_at: new Date().toISOString() })
+    .eq('id', deliveryId);
+  if (upErr) throw upErr;
+
+  // Course ouverte aux livreurs disponibles.
+  const { notifyAvailableCouriersForDelivery } = require('./notification.service');
+  await notifyAvailableCouriersForDelivery(db, deliveryId).catch(() => {});
+
+  // Le commerce est prévenu : paiement confirmé → un livreur va venir.
+  const ownerId = await findEstablishmentOwnerId(db, liv);
+  if (ownerId) {
+    const { notifyUserSafe } = require('./notification.service');
+    await notifyUserSafe(db, {
+      utilisateurId: ownerId,
+      type: 'livraison_statut',
+      titre: 'Paiement confirmé 🎉',
+      corps: 'Votre livraison est payée : un livreur est contacté pour la récupérer.',
+      data: { livraison_id: deliveryId, action: 'open_delivery' },
+    }).catch(() => {});
+  }
+
+  return liv;
+}
+
+/** Marque le paiement d'une livraison externe comme échoué (webhook PawaPay). */
+async function markExternalDeliveryPaymentFailed(db, deliveryId, reason) {
+  const { data: liv, error } = await db
+    .from('livraisons')
+    .select('*')
+    .eq('id', deliveryId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!liv) return null;
+  const snap =
+    liv.adresse_livraison_snapshot && typeof liv.adresse_livraison_snapshot === 'object'
+      ? { ...liv.adresse_livraison_snapshot }
+      : {};
+  snap.paiement_statut = 'echoue';
+  snap.paiement_echec_motif = reason || null;
+  const { error: upErr } = await db
+    .from('livraisons')
+    .update({ adresse_livraison_snapshot: snap, updated_at: new Date().toISOString() })
+    .eq('id', deliveryId);
+  if (upErr) throw upErr;
+  return liv;
+}
+
+/** Retrouve une livraison externe par son identifiant de dépôt PawaPay. */
+async function findLivraisonByDepositId(db, depositId) {
+  if (!depositId) return null;
+  const { data, error } = await db
+    .from('livraisons')
+    .select('*')
+    .eq('type_livraison', 'externe')
+    .order('created_at', { ascending: false })
+    .limit(50);
+  if (error) throw error;
+  for (const liv of data || []) {
+    const snap =
+      liv.adresse_livraison_snapshot && typeof liv.adresse_livraison_snapshot === 'object'
+        ? liv.adresse_livraison_snapshot
+        : {};
+    if (snap.paiement_deposit_id === depositId) return liv;
+  }
+  return null;
+}
+
+/** Statut de paiement d'une livraison externe (pour le suivi côté app). */
+async function getExternalDeliveryPaymentStatus(db, deliveryId) {
+  const { data: liv, error } = await db
+    .from('livraisons')
+    .select('*')
+    .eq('id', deliveryId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!liv) throw createHttpError(404, 'Livraison introuvable.');
+  const snap =
+    liv.adresse_livraison_snapshot && typeof liv.adresse_livraison_snapshot === 'object'
+      ? liv.adresse_livraison_snapshot
+      : {};
+  return {
+    livraison_id: liv.id,
+    statut: snap.paiement_statut || 'en_attente',
+    methode: snap.methode_paiement || null,
+    montant_fcfa: liv.montant_total != null ? Number(liv.montant_total) : null,
+    paye_at: snap.paye_at || null,
+  };
 }
 
 async function listVendorExternalDeliveries(db, userId, { activeOnly = true } = {}) {
@@ -282,6 +478,10 @@ async function listVendorExternalDeliveries(db, userId, { activeOnly = true } = 
 module.exports = {
   createExternalDelivery,
   listVendorExternalDeliveries,
+  confirmExternalDeliveryPayment,
+  markExternalDeliveryPaymentFailed,
+  findLivraisonByDepositId,
+  getExternalDeliveryPaymentStatus,
   getOwnedEstablishmentIds,
   deliverySnapshotFromPayload,
   collecteSnapshotFromEstablishment,

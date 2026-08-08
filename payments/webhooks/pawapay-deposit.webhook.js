@@ -92,7 +92,41 @@ async function handle(db, payload, { rawBody, signature } = {}) {
     logError({ msg: 'pawapay_deposit_log_failed', error: err.message });
   }
 
-  if (!paiement) return { ok: true, ignored: 'paiement_introuvable' };
+  if (!paiement) {
+    // Paiement d'une LIVRAISON externe (le commerce paie les frais de
+    // livraison) : le webhook confirme le paiement puis ouvre la course aux
+    // livreurs disponibles (et prévient le commerce).
+    try {
+      const {
+        findLivraisonByDepositId,
+        confirmExternalDeliveryPayment,
+        markExternalDeliveryPaymentFailed,
+      } = require('../../services/external-delivery.service');
+      const livraison = await findLivraisonByDepositId(db, depositId);
+      if (livraison) {
+        const snap =
+          livraison.adresse_livraison_snapshot &&
+          typeof livraison.adresse_livraison_snapshot === 'object'
+            ? livraison.adresse_livraison_snapshot
+            : {};
+        if (isSuccessStatus(status)) {
+          if (snap.paiement_statut === 'valide') {
+            return { ok: true, dejaValide: true, livraison_id: livraison.id };
+          }
+          await confirmExternalDeliveryPayment(db, livraison.id, { depositId });
+          return { ok: true, livraison_id: livraison.id, paiement_confirme: true };
+        }
+        if (isFailedStatus(status)) {
+          await markExternalDeliveryPaymentFailed(db, livraison.id, status);
+          return { ok: true, livraison_id: livraison.id, paiement_echec: true };
+        }
+        return { ok: true, ignored: 'statut_ignore', status, livraison_id: livraison.id };
+      }
+    } catch (err) {
+      logWarn({ msg: 'pawapay_deposit_livraison_fallback', depositId, error: err.message });
+    }
+    return { ok: true, ignored: 'paiement_introuvable' };
+  }
 
   if (isSuccessStatus(status)) {
     if (paiement.statut === 'valide') return { ok: true, dejaValide: true };

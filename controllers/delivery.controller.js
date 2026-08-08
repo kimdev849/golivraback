@@ -342,8 +342,12 @@ async function getDeliveryDetails(req, res, next) {
       paiement = p;
     }
 
-    const adresseLivraison = livraison.adresse_livraison_snapshot && typeof livraison.adresse_livraison_snapshot === 'object'
-      ? livraison.adresse_livraison_snapshot.texte
+    const livraisonSnap = livraison.adresse_livraison_snapshot && typeof livraison.adresse_livraison_snapshot === 'object'
+      ? livraison.adresse_livraison_snapshot
+      : {};
+
+    const adresseLivraison = livraisonSnap.texte
+      ? String(livraisonSnap.texte)
       : (typeof livraison.adresse_livraison_snapshot === 'string' ? livraison.adresse_livraison_snapshot : '');
 
     const adresseRetrait = livraison.adresse_collecte_snapshot && typeof livraison.adresse_collecte_snapshot === 'object'
@@ -390,6 +394,10 @@ async function getDeliveryDetails(req, res, next) {
         adresse_retrait: adresseRetrait || '',
         client_nom: livraison.client_nom || client?.nom || null,
         client_telephone: livraison.client_telephone || client?.telephone || null,
+        // Paiement du commerce (livraison externe) : statut + méthode, lus du snapshot.
+        paiement_statut: isExterne ? livraisonSnap.paiement_statut || null : null,
+        methode_paiement: isExterne ? livraisonSnap.methode_paiement || null : null,
+        paye_at: isExterne ? livraisonSnap.paye_at || null : null,
         proof_photo_url: role === 'client' ? null : livraison.proof_photo_url || null,
         // Preuve complète (photo + GPS + heure + présence) :
         // consultable uniquement en cas de litige ou par l'administration.
