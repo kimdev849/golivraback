@@ -136,6 +136,7 @@ async function createAdminCategory(req, res, next) {
       .select(adminSelectFor(cfg))
       .single();
     if (error) throw error;
+    invalidateCategoryNameCache();
     return res.status(201).json(data);
   } catch (error) {
     return next(error);
@@ -163,6 +164,7 @@ async function updateAdminCategory(req, res, next) {
       .select(adminSelectFor(cfg))
       .single();
     if (error) throw error;
+    invalidateCategoryNameCache();
     return res.json(data);
   } catch (error) {
     return next(error);
@@ -178,22 +180,51 @@ async function deleteAdminCategory(req, res, next) {
     const db = getDb();
     const { error } = await db.from(cfg.table).delete().eq('id', categoryId);
     if (error) throw error;
+    invalidateCategoryNameCache();
     return res.json({ ok: true });
   } catch (error) {
     return next(error);
   }
 }
 
-/** Charge un Map<categoryId, nom> depuis les référentiels produits + menus. */
+/**
+ * Charge un Map<categoryId, nom> depuis les référentiels produits + menus.
+ * Mémoïsé 30 s (2 requêtes DB à chaque appel sinon, y compris feed, recherche
+ * et catalogue) : le référentiel de catégories change rarement.
+ */
+const CATEGORY_NAME_MAP_TTL_MS = 30_000;
+let categoryNameCache = null;
+let categoryNameCacheAt = 0;
+
 async function loadCategoryNameMap(db) {
+  const now = Date.now();
+  if (categoryNameCache && now - categoryNameCacheAt < CATEGORY_NAME_MAP_TTL_MS) {
+    return categoryNameCache;
+  }
   const map = new Map();
+  let hadError = false;
   for (const key of ['produits', 'menus']) {
     const cfg = CATEGORY_TABLES[key];
     const { data, error } = await db.from(cfg.table).select('id, nom');
-    if (error) continue;
+    if (error) {
+      hadError = true;
+      continue;
+    }
     for (const c of data || []) map.set(c.id, c.nom);
   }
+  // On ne mémorise QUE si les deux requêtes ont réussi : un map partiel
+  // (erreur transitoire) ne doit pas être servi pendant 30 s à tous les appels.
+  if (!hadError) {
+    categoryNameCache = map;
+    categoryNameCacheAt = now;
+  }
   return map;
+}
+
+/** Invalide la mémoire des noms de catégories (appelé après un CRUD admin). */
+function invalidateCategoryNameCache() {
+  categoryNameCache = null;
+  categoryNameCacheAt = 0;
 }
 
 module.exports = {
@@ -204,4 +235,5 @@ module.exports = {
   updateAdminCategory,
   deleteAdminCategory,
   loadCategoryNameMap,
+  invalidateCategoryNameCache,
 };

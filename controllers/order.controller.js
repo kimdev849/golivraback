@@ -169,7 +169,31 @@ async function getOwnedEstablishmentIds(db, userId) {
 }
 
 async function mapVendorOrderRow(db, sc, commande, client) {
-  const { data: items } = await db.from('sous_commande_items').select('*').eq('sous_commande_id', sc.id);
+  // Les 3 lectures indépendantes partent EN PARALLÈLE (items, paiement,
+  // livraison) au lieu de 3 allers-retours séquentiels — gain de latence
+  // direct sur la liste des commandes vendeur (surtout multi-commandes).
+  const [itemsRes, paiementRes, livraisonRes] = await Promise.all([
+    db.from('sous_commande_items').select('*').eq('sous_commande_id', sc.id),
+    db
+      .from('paiements')
+      .select('statut')
+      .eq('commande_id', commande.id)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    db
+      .from('livraisons')
+      .select('livreur_id, statut')
+      .eq('sous_commande_id', sc.id)
+      .maybeSingle(),
+  ]);
+  const items = itemsRes.data || [];
+  const paiement = paiementRes.data;
+  const livraison = livraisonRes.data;
+  if (itemsRes.error) throw itemsRes.error;
+  if (paiementRes.error) throw paiementRes.error;
+  if (livraisonRes.error) throw livraisonRes.error;
+
   const snap = commande.adresse_livraison_snapshot;
   let addr = '';
   if (snap && typeof snap === 'object' && snap.texte) addr = snap.texte;
@@ -177,19 +201,7 @@ async function mapVendorOrderRow(db, sc, commande, client) {
 
   let livreur = null;
   let paiementStatut = null;
-  const { data: paiement } = await db
-    .from('paiements')
-    .select('statut')
-    .eq('commande_id', commande.id)
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
   if (paiement?.statut) paiementStatut = paiement.statut;
-  const { data: livraison } = await db
-    .from('livraisons')
-    .select('livreur_id, statut')
-    .eq('sous_commande_id', sc.id)
-    .maybeSingle();
   if (livraison?.livreur_id) {
     const { data: liv } = await db.from('livreurs').select('utilisateur_id').eq('id', livraison.livreur_id).maybeSingle();
     if (liv?.utilisateur_id) {
@@ -272,15 +284,18 @@ async function getVendorOrders(req, res, next) {
       : { data: [] };
     const clientMap = new Map((clients || []).map((u) => [u.id, u]));
 
-    const out = [];
-    for (const sc of scs || []) {
-      const commande = commandeMap.get(sc.commande_id);
-      if (!commande) continue;
-      const client = clientMap.get(commande.client_id);
-      out.push(await mapVendorOrderRow(db, sc, commande, client));
-    }
+    // Chaque sous-commande est mappée en parallèle (les lectures items /
+    // paiement / livraison de mapVendorOrderRow sont déjà parallèles).
+    const out = await Promise.all(
+      (scs || []).map(async (sc) => {
+        const commande = commandeMap.get(sc.commande_id);
+        if (!commande) return null;
+        const client = clientMap.get(commande.client_id);
+        return mapVendorOrderRow(db, sc, commande, client);
+      }),
+    );
 
-    return res.json(out);
+    return res.json(out.filter(Boolean));
   } catch (error) {
     return next(error);
   }
@@ -489,27 +504,34 @@ async function getOrderDetails(req, res, next) {
       livraisonBySc.get(liv.sous_commande_id).push(liv);
     }
 
-    const enriched = [];
-    for (const sc of sousCommandes || []) {
-      const { data: items } = await db.from('sous_commande_items').select('*').eq('sous_commande_id', sc.id);
-      const livs = livraisonBySc.get(sc.id) || [];
-      // Nom du commerce pour l'affichage client (répartition acceptée/refusée).
-      let commerceNom = null;
-      if (sc.restaurant_id) {
-        const { data: r } = await db.from('restaurants').select('nom').eq('id', sc.restaurant_id).maybeSingle();
-        commerceNom = r?.nom ?? null;
-      } else if (sc.boutique_id) {
-        const { data: b } = await db.from('boutiques').select('nom').eq('id', sc.boutique_id).maybeSingle();
-        commerceNom = b?.nom ?? null;
-      }
-      enriched.push({
-        ...sc,
-        commerce_nom: commerceNom,
-        articles: items || [],
-        livraisons: livs.map((l) => ({ id: l.id, statut: l.statut, type_livraison: l.type_livraison })),
-        livraison_id: livs[0]?.id || null,
-      });
-    }
+    // Lecture des items + nom du commerce pour TOUTES les sous-commandes en
+    // parallèle (au lieu d'une boucle séquentielle) — gain notable sur les
+    // commandes multi-commerce.
+    const enriched = await Promise.all(
+      (sousCommandes || []).map(async (sc) => {
+        const { data: items } = await db
+          .from('sous_commande_items')
+          .select('*')
+          .eq('sous_commande_id', sc.id);
+        const livs = livraisonBySc.get(sc.id) || [];
+        // Nom du commerce pour l'affichage client (répartition acceptée/refusée).
+        let commerceNom = null;
+        if (sc.restaurant_id) {
+          const { data: r } = await db.from('restaurants').select('nom').eq('id', sc.restaurant_id).maybeSingle();
+          commerceNom = r?.nom ?? null;
+        } else if (sc.boutique_id) {
+          const { data: b } = await db.from('boutiques').select('nom').eq('id', sc.boutique_id).maybeSingle();
+          commerceNom = b?.nom ?? null;
+        }
+        return {
+          ...sc,
+          commerce_nom: commerceNom,
+          articles: items || [],
+          livraisons: livs.map((l) => ({ id: l.id, statut: l.statut, type_livraison: l.type_livraison })),
+          livraison_id: livs[0]?.id || null,
+        };
+      }),
+    );
 
     // Statut du paiement + montant réellement dû (segments acceptés uniquement).
     const { data: paiementRow } = await db

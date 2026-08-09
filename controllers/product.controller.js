@@ -5,6 +5,32 @@ const { loadCategoryNameMap } = require('./product-category.controller');
 
 const ACTIVE = 'active';
 
+// ── Cache mémoire court du feed (la base d'établissements + plats/articles
+//    change rarement à l'échelle des secondes). Réduit la charge DB et la
+//    latence perçue au scroll infini. TTL volontairement court (10 s).
+const FEED_CACHE_TTL_MS = 10_000;
+const feedCache = new Map(); // key → { at, payload }
+
+function feedCacheKey(type, onlyPromo, villeId, limit, offset, userId) {
+  return [userId || 'anon', type || 'all', onlyPromo ? 'promo' : 'all', villeId || 'any', limit, offset].join('|');
+}
+
+function feedCacheGet(key) {
+  const hit = feedCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.at > FEED_CACHE_TTL_MS) {
+    feedCache.delete(key);
+    return null;
+  }
+  return hit.payload;
+}
+
+function feedCacheSet(key, payload) {
+  // Garde le cache borné (≤ 400 entrées) pour éviter toute fuite mémoire.
+  if (feedCache.size >= 400) feedCache.clear();
+  feedCache.set(key, { at: Date.now(), payload });
+}
+
 function isMissingColumnError(error, column) {
   const msg = String(error?.message ?? error ?? '').toLowerCase();
   return msg.includes(column) && (msg.includes('column') || msg.includes('colonne') || msg.includes('schema'));
@@ -470,6 +496,16 @@ async function listProductFeed(req, res, next) {
     const offset = Math.max(0, Number(req.query.offset) || 0);
     const includePlats = !type || type === 'plat' || type === 'all';
     const includeArticles = !type || type === 'article' || type === 'all';
+    const userId = req.auth?.userId;
+
+    // --- Cache court (10 s) VÉRIFIÉ AVANT toute requête DB : le coût réel du
+    //    feed est la collecte des établissements + plats/articles + noms de
+    //    catégories. Le catalogue bouge peu à cette échelle. Clé = params +
+    //    utilisateur (personnalisation) pour éviter tout résultat croisé.
+    const cacheKey = feedCacheKey(type, onlyPromo, villeId, limit, offset, userId);
+    const cached = feedCacheGet(cacheKey);
+    if (cached) return res.json(cached);
+
     const out = [];
     const categoryNames = await loadCategoryNameMap(db);
     if (includePlats) {
@@ -513,19 +549,22 @@ async function listProductFeed(req, res, next) {
       }
     }
     // --- Personnalisation Algorithmique ---
-    const userId = req.auth?.userId;
+    let result;
     if (userId) {
       const scores = await getUserScores(userId);
       const personalized = personalizeResults(out, scores, { rotationStrength: 0.2 });
-      return res.json(personalized.slice(offset, offset + limit));
+      result = personalized.slice(offset, offset + limit);
+    } else {
+      // Pour les anonymes, on garde un mélange aléatoire de base
+      for (let i = out.length - 1; i > 0; i -= 1) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [out[i], out[j]] = [out[j], out[i]];
+      }
+      result = out.slice(offset, offset + limit);
     }
 
-    // Pour les anonymes, on garde un mélange aléatoire de base
-    for (let i = out.length - 1; i > 0; i -= 1) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [out[i], out[j]] = [out[j], out[i]];
-    }
-    return res.json(out.slice(offset, offset + limit));
+    feedCacheSet(cacheKey, result);
+    return res.json(result);
   } catch (error) { return next(error); }
 }
 
@@ -625,6 +664,7 @@ async function createProduct(req, res, next) {
       if (stockIllimite === true) insertPlat.stock = null;
       else if (stock !== undefined && stock !== null && stock !== '') insertPlat.stock = Math.max(0, Math.floor(Number(stock)));
       const data = await insertPlatRow(db, insertPlat);
+      feedCache.clear(); // le catalogue vient de changer → on sert du frais immédiatement
       const categoryNames = await loadCategoryNameMap(db);
       return res.status(201).json(mapPlatToProduct(data, enterpriseId, categoryNames));
     }
@@ -636,6 +676,7 @@ async function createProduct(req, res, next) {
     if (unite) insertArt.unite = String(unite).trim();
     applyArticleCatalogFields(insertArt, { tags, imagesUrls, imageUrl: imgUrl, promoDebutAt, promoFinAt, typeProduit, etatProduit, marque, poidsKg, dimensions, estDisponible });
     const data = await insertArticleRow(db, insertArt);
+    feedCache.clear(); // le catalogue vient de changer → on sert du frais immédiatement
     const categoryNames = await loadCategoryNameMap(db);
     return res.status(201).json(mapArticleToProduct(data, enterpriseId, categoryNames));
   } catch (error) { return next(error); }
@@ -679,6 +720,7 @@ async function updateProduct(req, res, next) {
       const imagesPatch = { imagesUrls: imagesUrls !== undefined ? imagesUrls : normalizeImagesUrls(existing.images_urls), imageUrl: imageUrl !== undefined ? parseImageUrl(imageUrl) : existing.image_url };
       applyPlatCatalogFields(patch, { ...req.body, ...imagesPatch });
       const data = await updatePlatRow(db, productId, patch);
+      feedCache.clear(); // le catalogue vient de changer → on sert du frais immédiatement
       const categoryNames = await loadCategoryNameMap(db);
       return res.json(mapPlatToProduct(data, enterpriseId, categoryNames));
     }
@@ -700,6 +742,7 @@ async function updateProduct(req, res, next) {
     const imagesPatch = { imagesUrls: imagesUrls !== undefined ? imagesUrls : normalizeImagesUrls(existing.images_urls), imageUrl: imageUrl !== undefined ? parseImageUrl(imageUrl) : existing.image_url };
     applyArticleCatalogFields(patch, { ...req.body, ...imagesPatch });
     const data = await updateArticleRow(db, productId, patch);
+    feedCache.clear(); // le catalogue vient de changer → on sert du frais immédiatement
     const categoryNames = await loadCategoryNameMap(db);
     return res.json(mapArticleToProduct(data, enterpriseId, categoryNames));
   } catch (error) { return next(error); }
@@ -718,6 +761,7 @@ async function deleteProduct(req, res, next) {
     const table = kind === 'restaurant' ? 'plats' : 'articles';
     const { error } = await db.from(table).delete().eq('id', productId);
     if (error) throw error;
+    feedCache.clear(); // le catalogue vient de changer → on sert du frais immédiatement
     return res.status(204).send();
   } catch (error) { return next(error); }
 }
