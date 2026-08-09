@@ -31,9 +31,26 @@ function categoryTableFor(kind) {
   return null;
 }
 
-/** Colonnes lues par le back-office — image_url est l'alias d'affichage. */
+/**
+ * Colonnes lues par le back-office.
+ * ⚠️ IMPORTANT : PostgREST ne supporte PAS la syntaxe SQL `AS` dans le select
+ * (il interprète « image_url AS image_url » comme une colonne littérale
+ * « image_urlASimage_url » → erreur 42703). On sélectionne donc la colonne
+ * réelle (image_url ou icone_url) et on la renomme côté JavaScript.
+ */
 function adminSelectFor(cfg) {
-  return `id, nom, description, ${cfg.imageCol} AS image_url, ordre, est_active, created_at`;
+  return `id, nom, description, ${cfg.imageCol}, ordre, est_active, created_at`;
+}
+
+/** Renomme la colonne image réelle (image_url/icone_url) en « image_url » (contrat API). */
+function applyImageAlias(row, cfg) {
+  if (!row || !cfg || cfg.imageCol === 'image_url') return row;
+  const next = { ...row };
+  if (next[cfg.imageCol] !== undefined) {
+    next.image_url = next[cfg.imageCol];
+    delete next[cfg.imageCol];
+  }
+  return next;
 }
 
 async function resolveEstablishment(db, enterpriseId) {
@@ -50,15 +67,16 @@ async function resolveEstablishment(db, enterpriseId) {
  */
 async function fetchCategories(db, cfg, { includeInactive } = {}) {
   const { table, imageCol } = cfg;
+  // Pas de `AS` (non supporté par PostgREST) : colonne réelle + renommage JS.
   const selectExpr =
-    `id, nom, description, ${imageCol} AS image_url, ordre, est_active` +
+    `id, nom, description, ${imageCol}, ordre, est_active` +
     (includeInactive ? ', created_at' : '');
   let q = db.from(table).select(selectExpr);
   if (!includeInactive) q = q.eq('est_active', true);
   q = q.order('ordre', { ascending: true }).order('nom', { ascending: true });
   const { data, error } = await q;
   if (error) throw error;
-  return data || [];
+  return (data || []).map((row) => applyImageAlias(row, cfg));
 }
 
 /**
@@ -137,7 +155,7 @@ async function createAdminCategory(req, res, next) {
       .single();
     if (error) throw error;
     invalidateCategoryNameCache();
-    return res.status(201).json(data);
+    return res.status(201).json(applyImageAlias(data, cfg));
   } catch (error) {
     return next(error);
   }
@@ -165,7 +183,7 @@ async function updateAdminCategory(req, res, next) {
       .single();
     if (error) throw error;
     invalidateCategoryNameCache();
-    return res.json(data);
+    return res.json(applyImageAlias(data, cfg));
   } catch (error) {
     return next(error);
   }
