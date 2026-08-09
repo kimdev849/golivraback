@@ -55,12 +55,17 @@ function normalizeSupabaseError(err) {
     const col = parseMissingColumn(err);
     const cacheHint =
       ' Si le script SQL est déjà exécuté : Supabase → Project Settings → API → « Reload schema » (cache PostgREST), puis redéployez l’API Render.';
+    // On expose l'erreur brute (message Supabase/PostgREST) pour un diagnostic
+    // immédiat côté admin : « relation does not exist » = table absente,
+    // « column … does not exist » = colonne absente, PGRST204 = cache PostgREST.
+    const rawDetail = String(err?.message || err?.details || '').trim();
     return {
       status: 500,
       message: col
         ? `Colonne « ${col} » absente du cache API.${cacheHint}`
         : `Schéma base / cache API incomplet.${cacheHint}`,
       code: 'SCHEMA_INCOMPLET',
+      details: rawDetail ? rawDetail.slice(0, 300) : undefined,
     };
   }
 
