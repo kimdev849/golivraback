@@ -200,8 +200,12 @@ app.use((err, req, res, _next) => {
     console.error('[API]', err.code, err.message, err.details || '');
   }
 
+  // Un 503 « règle métier » (feature flag coupé par l'admin, kill switch…) est
+  // volontaire : on ne crée pas d'incident technique dessus.
+  const isBusinessRule = err?.business === true || err?.code === 'FEATURE_DISABLED';
   const shouldRecord =
-    status >= 500 || (status >= 400 && status !== 401 && !String(req.originalUrl || '').includes('/observability/report'));
+    !isBusinessRule &&
+    (status >= 500 || (status >= 400 && status !== 401 && !String(req.originalUrl || '').includes('/observability/report')));
 
   if (shouldRecord) {
     recordIncidentAsync(

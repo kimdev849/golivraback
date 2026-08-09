@@ -28,11 +28,11 @@ async function getDashboardOverview({ windowMin = 60 } = {}) {
   ] = await Promise.all([
     db
       .from('request_metrics')
-      .select('status, latency_ms')
+      .select('status, latency_ms, error_type')
       .gte('created_at', since),
     db
       .from('request_metrics')
-      .select('source, status')
+      .select('source, status, error_type')
       .gte('created_at', since),
     db
       .from('request_metrics')
@@ -45,7 +45,7 @@ async function getDashboardOverview({ windowMin = 60 } = {}) {
       .neq('state', 'resolu'),
     db
       .from('request_metrics')
-      .select('method, path, status, latency_ms')
+      .select('method, path, status, latency_ms, error_type')
       .gte('created_at', since)
       .order('created_at', { ascending: false })
       .limit(2000),
@@ -60,7 +60,7 @@ async function getDashboardOverview({ windowMin = 60 } = {}) {
 
   const metrics = metricsRes.data || [];
   const requestCount = metrics.length;
-  const errorCount = metrics.filter((m) => m.status >= 500).length;
+  const errorCount = metrics.filter((m) => m.status >= 500 && m.error_type !== 'feature_disabled').length;
   const slowCount = metrics.filter((m) => (m.latency_ms || 0) >= SLOW_REQUEST_MS).length;
   const latencies = metrics.map((m) => m.latency_ms || 0).sort((a, b) => a - b);
   const p50 = percentile(latencies, 0.5);
@@ -72,7 +72,7 @@ async function getDashboardOverview({ windowMin = 60 } = {}) {
     const k = row.source || 'unknown';
     if (!bySource[k]) bySource[k] = { source: k, request_count: 0, error_count: 0 };
     bySource[k].request_count += 1;
-    if (row.status >= 500) bySource[k].error_count += 1;
+    if (row.status >= 500 && row.error_type !== 'feature_disabled') bySource[k].error_count += 1;
   });
   Object.values(bySource).forEach((s) => {
     s.error_rate = safeDivide(s.error_count, s.request_count);
@@ -108,7 +108,7 @@ async function getDashboardOverview({ windowMin = 60 } = {}) {
     }
     const e = endpointAgg[key];
     e.request_count += 1;
-    if (row.status >= 500) e.error_count += 1;
+    if (row.status >= 500 && row.error_type !== 'feature_disabled') e.error_count += 1;
     if ((row.latency_ms || 0) >= SLOW_REQUEST_MS) e.slow_count += 1;
     e.latencies.push(row.latency_ms || 0);
   });
@@ -165,7 +165,7 @@ async function getEndpointHealth({ windowMin = 60, minRequests = 1 } = {}) {
   const since = new Date(Date.now() - windowMin * 60 * 1000).toISOString();
   const { data, error } = await db
     .from('request_metrics')
-    .select('method, path, status, latency_ms')
+    .select('method, path, status, latency_ms, error_type')
     .gte('created_at', since);
   if (error) throw error;
 
@@ -178,7 +178,7 @@ async function getEndpointHealth({ windowMin = 60, minRequests = 1 } = {}) {
     const e = agg[key];
     e.request_count += 1;
     e.latencies.push(row.latency_ms || 0);
-    if (row.status >= 500) e.error_count += 1;
+    if (row.status >= 500 && row.error_type !== 'feature_disabled') e.error_count += 1;
     if ((row.latency_ms || 0) >= SLOW_REQUEST_MS) e.slow_count += 1;
   });
 
@@ -240,7 +240,7 @@ async function persistHourlySnapshot(bucketHour) {
     const e = agg[key];
     e.request_count += 1;
     e.latencies.push(row.latency_ms || 0);
-    if (row.status >= 500) e.error_count += 1;
+    if (row.status >= 500 && row.error_type !== 'feature_disabled') e.error_count += 1;
     if ((row.latency_ms || 0) >= SLOW_REQUEST_MS) e.slow_count += 1;
     if (row.fingerprint) {
       e.fingerprintCounts[row.fingerprint] = (e.fingerprintCounts[row.fingerprint] || 0) + 1;

@@ -34,18 +34,22 @@ function requireFeature(feature) {
 
     // Kill switch global : l'app entière est coupée.
     if (!control.app_enabled) {
-      return next(
-        createHttpError(503, 'GoLivra est temporairement indisponible. Réessayez plus tard.')
-      );
+      const err = createHttpError(503, 'GoLivra est temporairement indisponible. Réessayez plus tard.');
+      err.business = true; // règle métier volontaire (admin) → pas un incident technique
+      err.code = 'FEATURE_DISABLED';
+      req._businessError = true;
+      return next(err);
     }
 
     if (!control[field]) {
-      return next(
-        createHttpError(
-          503,
-          `L'option « ${label} » est temporairement désactivée par l'administrateur. Réessayez plus tard.`
-        )
+      const err = createHttpError(
+        503,
+        `L'option « ${label} » est temporairement désactivée par l'administrateur. Réessayez plus tard.`
       );
+      err.business = true;
+      err.code = 'FEATURE_DISABLED';
+      req._businessError = true;
+      return next(err);
     }
 
     return next();

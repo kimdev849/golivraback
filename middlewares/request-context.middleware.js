@@ -27,7 +27,9 @@ function requestContextMiddleware(req, res, next) {
       clientSource,
     });
 
-    // Persistance métrique + détection slow
+    // Persistance métrique + détection slow.
+    // Les 503 « règle métier » (feature flags coupés par l'admin) sont marqués
+    // feature_disabled : exclus du taux de 5xx du dashboard.
     observability.recordRequestMetricAsync({
       requestId,
       method: req.method,
@@ -37,10 +39,12 @@ function requestContextMiddleware(req, res, next) {
       source: clientSource,
       userId: req.auth?.userId || null,
       userRole: req.auth?.role || null,
+      errorType: req._businessError ? 'feature_disabled' : null,
     });
 
     // Auto-capture des erreurs 5xx (en plus des erreurs catchées par le handler global)
-    if (status >= 500 && !req._observabilityCaptured) {
+    // — sauf les 503 métier volontaires (feature flags coupés par l'admin).
+    if (status >= 500 && !req._observabilityCaptured && !req._businessError) {
       const incident = observability.incidentFromHttpError(
         { status, message: `${req.method} ${req.originalUrl} → ${status}`, stack: null },
         req,

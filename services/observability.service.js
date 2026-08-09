@@ -259,6 +259,10 @@ function normalizeIncidentInput(input = {}) {
   };
 }
 
+// Chemins (method + path) ayant un incident ouvert — auto-résolus dès qu'une
+// requête réussit (status < 500) sur le même chemin. Mémoire du process.
+const openIncidentPaths = new Map(); // `${method} ${path}` → incidentId
+
 async function recordIncident(input) {
   const row = normalizeIncidentInput(input);
 
@@ -289,6 +293,10 @@ async function recordIncident(input) {
           .select('id, occurrence_count')
           .single();
         if (!updErr) {
+          if (row.http_method && row.http_path) {
+            openIncidentPaths.set(`${row.http_method} ${String(row.http_path).slice(0, 256)}`, existing.id);
+            if (openIncidentPaths.size > 500) openIncidentPaths.clear(); // borne mémoire
+          }
           return { ok: true, id: updated?.id, deduped: true };
         }
       }
@@ -301,6 +309,10 @@ async function recordIncident(input) {
         dbError: error.message,
       });
       return { ok: false, error: error.message };
+    }
+    if (row.http_method && row.http_path) {
+      openIncidentPaths.set(`${row.http_method} ${String(row.http_path).slice(0, 256)}`, data?.id);
+      if (openIncidentPaths.size > 500) openIncidentPaths.clear();
     }
     return { ok: true, id: data?.id, fingerprint: row.fingerprint };
   } catch (err) {
@@ -336,6 +348,28 @@ async function recordRequestMetric(metric) {
       fingerprint: metric.fingerprint ? String(metric.fingerprint).slice(0, 32) : null,
       environment: metric.environment ? String(metric.environment).slice(0, 32) : null,
     });
+
+    // Auto-résolution : si une requête réussit sur un chemin qui avait un
+    // incident ouvert, on le clôture (l'incident reflétait un problème passé).
+    const status = Number(metric.status) || 0;
+    if (status < 500 && metric.method && metric.path) {
+      const key = `${String(metric.method).slice(0, 8)} ${String(metric.path).slice(0, 256)}`;
+      if (openIncidentPaths.has(key)) {
+        const incidentId = openIncidentPaths.get(key);
+        openIncidentPaths.delete(key);
+        await db
+          .from('app_incidents')
+          .update({
+            state: 'resolu',
+            resolved: true,
+            resolved_at: new Date().toISOString(),
+            resolved_by: null,
+            admin_note: 'Auto-résolu : le chemin répond de nouveau correctement.',
+          })
+          .eq('id', incidentId)
+          .neq('state', 'resolu');
+      }
+    }
   } catch (err) {
     logWarn({ msg: 'recordRequestMetric failed', error: err?.message || String(err) });
   }
@@ -449,6 +483,18 @@ function normalizeIncident(row) {
 
 async function getIncidentById(id) {
   const db = getDb();
+  const raw = String(id || '').trim();
+  // L'admin web peut transmettre l'ID court (8 premiers caractères du
+  // request_id, ex. « 1e1aaa74 ») — on résout par préfixe : jamais de 500.
+  if (/^[0-9a-f]{8}$/i.test(raw)) {
+    const { data, error } = await db
+      .from('app_incidents')
+      .select('*')
+      .or(`id.like.${raw}%,request_id.like.${raw}%`)
+      .limit(1);
+    if (error) throw error;
+    return normalizeIncident(Array.isArray(data) ? data[0] : null);
+  }
   const { data, error } = await db.from('app_incidents').select('*').eq('id', id).maybeSingle();
   if (error) throw error;
   return normalizeIncident(data);

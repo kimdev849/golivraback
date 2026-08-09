@@ -27,6 +27,19 @@ async function reportIncident(req, res, next) {
       payload.source = req.headers['x-client-source'] === 'admin' ? 'admin' : 'mobile';
     }
 
+    // Un 503 « règle métier » (feature flag coupé par l'admin, kill switch…)
+    // rapporté par un client ne doit pas créer d'incident technique.
+    const status = Number(payload.http_status ?? payload.httpStatus ?? 0) || 0;
+    const msg = String(payload.message || payload.title || '');
+    const isBusiness503 =
+      status === 503 &&
+      (payload.code === 'FEATURE_DISABLED' ||
+        msg.includes('temporairement désactivée') ||
+        msg.includes('temporairement indisponible'));
+    if (isBusiness503) {
+      return res.status(201).json({ ok: true, skipped: true, requestId });
+    }
+
     const result = await observability.recordIncident(payload);
     return res.status(result.ok ? 201 : 503).json({
       ok: result.ok,

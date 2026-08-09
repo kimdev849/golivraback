@@ -39,7 +39,7 @@ async function computeTechnical(db, sinceWindow) {
   try {
     const { data, error } = await db
       .from('request_metrics')
-      .select('status, latency_ms')
+      .select('status, latency_ms, error_type')
       .gte('created_at', sinceWindow);
     if (error) throw error;
     const metrics = data || [];
@@ -47,6 +47,8 @@ async function computeTechnical(db, sinceWindow) {
     const byStatus = { c2xx: 0, c3xx: 0, c400: 0, c401: 0, c404: 0, c4xx: 0, c5xx: 0 };
     for (const m of metrics) {
       const s = Number(m.status) || 0;
+      // 503 « règle métier » (feature flags coupés par l'admin) : pas une panne.
+      if (s >= 500 && m.error_type === 'feature_disabled') continue;
       if (s >= 500) byStatus.c5xx += 1;
       else if (s === 400) byStatus.c400 += 1;
       else if (s === 401) byStatus.c401 += 1;
@@ -82,17 +84,19 @@ async function computeServices(db, { sinceWindow, sinceDay }) {
   const empty = { status: 'unknown', label: 'Inconnu' };
   try {
     const [trafficRes, dbErrRes, payIncidentRes, payRes, mobileErrRes] = await Promise.all([
-      db.from('request_metrics').select('status').gte('created_at', sinceWindow),
+      db.from('request_metrics').select('status, error_type').gte('created_at', sinceWindow),
       db
         .from('app_incidents')
         .select('id')
         .eq('source', 'backend')
         .eq('error_type', 'DatabaseError')
+        .neq('state', 'resolu')
         .gte('created_at', sinceDay),
       db
         .from('app_incidents')
         .select('id')
         .or('error_type.eq.PaymentError,category.eq.payment')
+        .neq('state', 'resolu')
         .gte('created_at', sinceDay),
       db.from('paiements').select('statut').gte('created_at', sinceDay),
       db
@@ -100,13 +104,16 @@ async function computeServices(db, { sinceWindow, sinceDay }) {
         .select('id')
         .eq('source', 'mobile')
         .eq('severity', 'error')
+        .neq('state', 'resolu')
         .gte('created_at', sinceDay),
     ]);
 
     // API : trafic dans la fenêtre + taux d'erreur 5xx
     const traffic = trafficRes.data || [];
     const trafficCount = traffic.length;
-    const fiveXx = traffic.filter((m) => Number(m.status) >= 500).length;
+    const fiveXx = traffic.filter(
+      (m) => Number(m.status) >= 500 && m.error_type !== 'feature_disabled'
+    ).length;
     const apiRate = safeDivide(fiveXx, trafficCount);
     let api = { status: 'ok', label: STATUS_LABEL.ok };
     if (trafficCount === 0) {
