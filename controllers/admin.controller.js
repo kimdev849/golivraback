@@ -164,6 +164,7 @@ async function getAdminStats(req, res, next) {
       pendingUsers,
       ordersRes,
       livraisonsRes,
+      sessionsRes,
     ] = await Promise.all([
       db.from('restaurants').select('id', { count: 'exact', head: true }).eq('statut', 'en_attente'),
       db.from('boutiques').select('id', { count: 'exact', head: true }).eq('statut', 'en_attente'),
@@ -175,6 +176,12 @@ async function getAdminStats(req, res, next) {
         .eq('est_approuve', false),
       db.from('commandes').select('id', { count: 'exact', head: true }),
       db.from('livraisons').select('id, type_livraison, sous_commande_id, statut'),
+      // Sessions actives = comptes connectés (sessions non expirées et non révoquées).
+      db
+        .from('sessions')
+        .select('id', { count: 'exact', head: true })
+        .gt('expire_at', new Date().toISOString())
+        .eq('revoque', false),
     ]);
 
     if (pendingRestaurants.error) throw pendingRestaurants.error;
@@ -184,6 +191,7 @@ async function getAdminStats(req, res, next) {
     if (pendingUsers.error) throw pendingUsers.error;
     if (ordersRes.error) throw ordersRes.error;
     if (livraisonsRes.error) throw livraisonsRes.error;
+    if (sessionsRes.error) throw sessionsRes.error;
 
     const livraisons = livraisonsRes.data || [];
     const livraisonsTotal = livraisons.length;
@@ -220,6 +228,7 @@ async function getAdminStats(req, res, next) {
       livraisons_total: livraisonsTotal,
       livraisons_externes: livraisonsExternes,
       livraisons_en_cours: livraisonsEnCours,
+      comptes_connectes: sessionsRes.count || 0,
       incidents_ouverts,
     });
   } catch (error) {
