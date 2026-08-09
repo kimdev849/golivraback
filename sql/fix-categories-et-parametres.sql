@@ -102,7 +102,7 @@ INSERT INTO categories_restaurants (nom, ordre) VALUES
   ('Cuisine asiatique',       7),
   ('Végétarien',              8),
   ('Autre',                  99)
-ON CONFLICT (nom) DO NOTHING;
+ON CONFLICT DO NOTHING;
 
 -- ─────────────────────────────────────────────
 -- 4. TYPES DE BOUTIQUES (choisis à l'inscription)
@@ -128,7 +128,7 @@ INSERT INTO categories_boutiques (nom, ordre) VALUES
   ('Librairie & Papeterie',   8),
   ('Sport',                   9),
   ('Autre',                  99)
-ON CONFLICT (nom) DO NOTHING;
+ON CONFLICT DO NOTHING;
 
 -- ─────────────────────────────────────────────
 -- 5. PARAMÈTRES SYSTÈME (réglages GoLivra + contrôle de l'app)
@@ -212,15 +212,17 @@ BEGIN
       AND NOT EXISTS (SELECT 1 FROM categories_boutiques WHERE id = boutiques.categorie_id);
   END IF;
 
-  -- Supprime les anciennes FK (par-commerce ou obsolètes) sur ces colonnes.
+  -- Supprime uniquement les ANCIENNES FK par-commerce (categories_articles /
+  -- categories_plats) qui bloqueraient le rebranchement. Les FK légitimes vers
+  -- categories_restaurants / categories_boutiques ne sont jamais touchées.
   FOR con IN
-    SELECT c.conname, rel.relname AS tbl, ref.relname AS reftbl
+    SELECT c.conname, rel.relname AS tbl
     FROM pg_constraint c
     JOIN pg_class rel ON rel.oid = c.conrelid
     JOIN pg_class ref ON ref.oid = c.confrelid
     WHERE c.contype = 'f'
-      AND rel.relname IN ('articles','plats','restaurants','boutiques')
-      AND ref.relname IN ('categories_articles','categories_plats','categories_restaurants','categories_boutiques')
+      AND rel.relname IN ('articles','plats')
+      AND ref.relname IN ('categories_articles','categories_plats')
   LOOP
     EXECUTE format('ALTER TABLE %I DROP CONSTRAINT %I', con.tbl, con.conname);
   END LOOP;
