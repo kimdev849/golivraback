@@ -30,6 +30,16 @@ CREATE TABLE IF NOT EXISTS categories_produits (
   created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
+-- Réparation de structure : si la table existe déjà dans une version ANCIENNE
+-- (sans ordre / est_active / created_at), CREATE TABLE IF NOT EXISTS ne la
+-- modifie pas → le backend reçoit une erreur 42703 « colonne absente ».
+-- Ces ALTER idempotents complètent la table existante quoi qu'il arrive.
+ALTER TABLE categories_produits ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE categories_produits ADD COLUMN IF NOT EXISTS image_url TEXT;
+ALTER TABLE categories_produits ADD COLUMN IF NOT EXISTS ordre SMALLINT NOT NULL DEFAULT 0;
+ALTER TABLE categories_produits ADD COLUMN IF NOT EXISTS est_active BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE categories_produits ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
 CREATE UNIQUE INDEX IF NOT EXISTS uq_categories_produits_nom ON categories_produits (LOWER(nom));
 
 INSERT INTO categories_produits (nom, ordre) VALUES
@@ -63,6 +73,12 @@ CREATE TABLE IF NOT EXISTS categories_menus (
   created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE categories_menus ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE categories_menus ADD COLUMN IF NOT EXISTS image_url TEXT;
+ALTER TABLE categories_menus ADD COLUMN IF NOT EXISTS ordre SMALLINT NOT NULL DEFAULT 0;
+ALTER TABLE categories_menus ADD COLUMN IF NOT EXISTS est_active BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE categories_menus ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
 CREATE UNIQUE INDEX IF NOT EXISTS uq_categories_menus_nom ON categories_menus (LOWER(nom));
 
 INSERT INTO categories_menus (nom, ordre) VALUES
@@ -92,6 +108,12 @@ CREATE TABLE IF NOT EXISTS categories_restaurants (
   created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE categories_restaurants ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE categories_restaurants ADD COLUMN IF NOT EXISTS icone_url TEXT;
+ALTER TABLE categories_restaurants ADD COLUMN IF NOT EXISTS ordre SMALLINT NOT NULL DEFAULT 0;
+ALTER TABLE categories_restaurants ADD COLUMN IF NOT EXISTS est_active BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE categories_restaurants ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
 INSERT INTO categories_restaurants (nom, ordre) VALUES
   ('Restaurant africain',     1),
   ('Fast Food',               2),
@@ -116,6 +138,12 @@ CREATE TABLE IF NOT EXISTS categories_boutiques (
   est_active  BOOLEAN      NOT NULL DEFAULT TRUE,
   created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE categories_boutiques ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE categories_boutiques ADD COLUMN IF NOT EXISTS icone_url TEXT;
+ALTER TABLE categories_boutiques ADD COLUMN IF NOT EXISTS ordre SMALLINT NOT NULL DEFAULT 0;
+ALTER TABLE categories_boutiques ADD COLUMN IF NOT EXISTS est_active BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE categories_boutiques ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
 INSERT INTO categories_boutiques (nom, ordre) VALUES
   ('Épicerie & Alimentation', 1),
