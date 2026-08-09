@@ -216,6 +216,7 @@ app.use((err, req, res, _next) => {
   res.status(status).json({
     message,
     code,
+    ...(normalized.details ? { details: normalized.details } : {}),
     requestId: req.requestId || null,
   });
 });
