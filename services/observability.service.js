@@ -490,7 +490,8 @@ async function getIncidentById(id) {
     const { data, error } = await db
       .from('app_incidents')
       .select('*')
-      .or(`id::text.like.${raw}%,request_id.like.${raw}%`)
+      .like('request_id', `${raw}%`)
+      .order('created_at', { ascending: false })
       .limit(1);
     if (error) throw error;
     return normalizeIncident(Array.isArray(data) ? data[0] : null);
