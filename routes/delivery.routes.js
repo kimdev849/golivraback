@@ -1,6 +1,7 @@
 const express = require('express');
 const { authMiddleware } = require('../middlewares/auth.middleware');
 const { requireRoles } = require('../middlewares/role.middleware');
+const { requireFeature } = require('../middlewares/feature-flag.middleware');
 const {
   getDeliveryStatus,
   getDeliveryDetails,
@@ -32,6 +33,7 @@ router.post(
   '/vendor/externe',
   authMiddleware,
   requireRoles(['restaurateur', 'commercant', 'admin']),
+  requireFeature('delivery'),
   createVendorExternalDelivery,
 );
 router.get(

@@ -14,12 +14,13 @@ const {
   patchMyPreferences,
 } = require('../controllers/auth.controller');
 const { authMiddleware } = require('../middlewares/auth.middleware');
+const { requireBetaAccess } = require('../middlewares/beta-gate.middleware');
 
 const router = express.Router();
 
-router.post('/register', register);
-router.post('/register-vendor', registerVendor);
-router.post('/login', login);
+router.post('/register', requireBetaAccess, register);
+router.post('/register-vendor', requireBetaAccess, registerVendor);
+router.post('/login', requireBetaAccess, login);
 router.post('/staff/login', staffLogin);
 router.post('/reset-password', resetPassword);
 router.get('/me', authMiddleware, me);

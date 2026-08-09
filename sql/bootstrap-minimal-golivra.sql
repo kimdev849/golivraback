@@ -325,7 +325,48 @@ BEGIN
 END $$;
 
 -- ─────────────────────────────────────────────
--- 4. COMPTE ADMINISTRATEUR
+-- 4. PARAMÈTRES SYSTÈME + CONTRÔLE TOTAL DE L'APPLICATION
+-- ─────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS parametres_systeme (
+  cle         VARCHAR(100) PRIMARY KEY,
+  valeur      TEXT         NOT NULL,
+  type        VARCHAR(20)  NOT NULL DEFAULT 'string',
+  description TEXT,
+  est_public  BOOLEAN      NOT NULL DEFAULT FALSE,
+  updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  updated_par UUID
+);
+
+INSERT INTO parametres_systeme (cle, valeur, type, description, est_public) VALUES
+  ('commission_marketplace_defaut_pct',  '5',     'number',  'Commission GoLivra sur ventes (%)',            FALSE),
+  ('frais_livraison_base_fcfa',          '500',   'number',  'Frais de livraison de base (FCFA)',            TRUE),
+  ('frais_livraison_par_km_fcfa',        '150',   'number',  'Frais additionnels par km (FCFA)',             TRUE),
+  ('frais_livraison_min_fcfa',           '500',   'number',  'Frais de livraison minimum (FCFA)',            TRUE),
+  ('frais_livraison_max_fcfa',           '5000',  'number',  'Frais de livraison maximum (FCFA)',            TRUE),
+  ('rayon_livraison_defaut_km',          '10',    'number',  'Rayon de livraison par défaut (km)',           TRUE),
+  ('montant_min_commande_fcfa',          '1000',  'number',  'Montant minimum de commande (FCFA)',           TRUE),
+  ('platform_fee_percent',               '0',     'number',  'Commission plateforme sur ventes (%)',         FALSE),
+  ('merchant_percent',                   '100',   'number',  'Part commerce sur ventes (%)',                 FALSE),
+  ('delivery_platform_percent',          '20',    'number',  'Part plateforme sur frais de livraison (%)',   FALSE),
+  ('delivery_logistics_percent',         '80',    'number',  'Part logistique sur frais de livraison (%)',   FALSE),
+  ('golivra_platform_name',              'GoLivra','string',  'Nom affiché de la plateforme',                 TRUE),
+  ('golivra_support_email',              'support@golivra.cg', 'string', 'E-mail de support',            TRUE),
+  ('golivra_email_notifications',        'true',  'boolean', 'Notifications e-mail système',                 FALSE),
+  ('golivra_sms_notifications',          'true',  'boolean', 'Notifications SMS système',                    FALSE),
+  ('golivra_app_enabled',                'true',  'boolean', 'Kill switch global : si false, toute l''application est coupée', TRUE),
+  ('golivra_maintenance_mode',           'false', 'boolean', 'Mode maintenance : blocage de toute l''application', FALSE),
+  ('golivra_min_app_version',            '1.0.0', 'string',  'Version minimale acceptée (force la MAJ APK)',  TRUE),
+  ('golivra_beta_mode',                  'false', 'boolean', 'Bêta fermée : seuls les téléphones autorisés accèdent', TRUE),
+  ('golivra_beta_phones',                '',      'string',  'Téléphones autorisés en bêta fermée (virgules)', FALSE),
+  ('golivra_orders_enabled',             'true',  'boolean', 'Activer / désactiver la passation de commandes', TRUE),
+  ('golivra_payments_enabled',           'true',  'boolean', 'Activer / désactiver les paiements en ligne',    TRUE),
+  ('golivra_delivery_enabled',           'true',  'boolean', 'Activer / désactiver les livraisons',            TRUE),
+  ('golivra_announcement',               '',      'string',  'Message d''annonce affiché dans l''application',  TRUE)
+ON CONFLICT (cle) DO NOTHING;
+
+-- ─────────────────────────────────────────────
+-- 5. COMPTE ADMINISTRATEUR
 -- ─────────────────────────────────────────────
 
 -- Colonnes attendues par le backend (ajoutées si absentes du schéma legacy).
@@ -406,7 +447,7 @@ BEGIN
     ) VALUES (
       'GoLivra Admin',
       'golivra@gmail.com',
-      '+242990000001',
+      '+242067811462',
       v_hash,
       v_role_id,
       TRUE, TRUE, TRUE
@@ -416,7 +457,7 @@ BEGIN
 END $$;
 
 -- ─────────────────────────────────────────────
--- 5. RAPPORT
+-- 6. RAPPORT
 -- ─────────────────────────────────────────────
 
 DO $$
@@ -456,6 +497,10 @@ BEGIN
     IF to_regclass('public.categories_menus') IS NOT NULL THEN
       SELECT count(*) INTO v_cnt FROM categories_menus;
       RAISE NOTICE 'cats_menus=%', v_cnt;
+    END IF;
+    IF to_regclass('public.parametres_systeme') IS NOT NULL THEN
+      SELECT count(*) INTO v_cnt FROM parametres_systeme WHERE cle LIKE 'golivra_%';
+      RAISE NOTICE 'feature_flags=%', v_cnt;
     END IF;
   END IF;
 END $$;

@@ -3,6 +3,7 @@ const {
   listAdminSettings,
   updateAdminSettings,
   getPublicSettings,
+  getAppControl,
 } = require('../services/settings.service');
 
 async function getPublic(req, res, next) {
@@ -10,6 +11,21 @@ async function getPublic(req, res, next) {
     const db = getDb();
     const settings = await getPublicSettings(db);
     return res.json(settings);
+  } catch (error) {
+    return next(error);
+  }
+}
+
+/**
+ * GET /api/settings/status — statut public de l'application.
+ * Le mobile l'appelle au démarrage (maintenance, kill switch, version min,
+ * feature flags). Toujours 200 : chaque champ est déterministe.
+ */
+async function getAppStatus(req, res, next) {
+  try {
+    const db = getDb();
+    const status = await getAppControl(db);
+    return res.json(status);
   } catch (error) {
     return next(error);
   }
@@ -37,6 +53,7 @@ async function updateAdmin(req, res, next) {
 
 module.exports = {
   getPublic,
+  getAppStatus,
   listAdmin,
   updateAdmin,
 };
