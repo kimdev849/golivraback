@@ -79,6 +79,15 @@ async function resolveDeliveryAddress(db, clientId, payload) {
   }
 
   if (adresseStruct && typeof adresseStruct === 'object') {
+    // Rejet des adresses de test absurdes (« @##fff », « 555@#$$kk » …),
+    // miroir de `deliveryAddressError` côté mobile. L'adresse détaillée est
+    // obligatoire (un quartier seul ne suffit pas).
+    const ligne1 = String(adresseStruct.ligne1 || '').trim();
+    if (!ligne1) {
+      throw createHttpError(400, 'Indiquez une adresse détaillée de livraison.');
+    }
+    const { requireValid, validateAddress } = require('../lib/validators');
+    requireValid(ligne1, (v) => validateAddress(v, true), 'adresse.ligne1');
     const snap = snapshotAddress(adresseStruct);
     if (!snap.texte || snap.texte.length < 8) {
       throw createHttpError(400, 'Complétez le quartier et la description de livraison.');

@@ -50,6 +50,26 @@ function normalizeRows(rows) {
   }));
 }
 
+/**
+ * Heure « murale » de Brazzaville (UTC+1) à partir d'un instant quelconque.
+ *
+ * Les horaires des commerces sont saisis en heure locale (Brazzaville) et
+ * interprétés comme tels. Sans ce décallage, un serveur réglé sur UTC évalue
+ * « maintenant » avec 1 h de retard : à 9h30 locales, il croit qu'il est 8h30
+ * et bloque les commandes (« Réouverture aujourd'hui à 09h00 ») alors que le
+ * commerce est déjà ouvert.
+ *
+ * Retourne un `Date` décalé pour que `getHours()`, `getMinutes()`, `getDay()`
+ * et les accesseurs de date lisent l'heure de Brazzaville.
+ */
+function nowInBrazzaville(now) {
+  // getTimezoneOffset() = minutes à soustraire de l'heure locale pour UTC.
+  // Brazzaville = UTC+1 → décalage cible de +60 min ; on décale le timestamp
+  // de (60 + getTimezoneOffset()) minutes pour aligner les accesseurs locaux.
+  const offsetDiffMin = 60 + now.getTimezoneOffset();
+  return new Date(now.getTime() + offsetDiffMin * 60_000);
+}
+
 /** Lit les horaires d'un établissement (restaurant ou boutique). */
 async function getEtablissementHoraires(db, { kind, id }) {
   if (!id) return [];
@@ -96,8 +116,10 @@ function computeOrderFeasibility(horaires, prepMinutes = 0, now = new Date(), ty
     };
   }
 
-  const nowMin = now.getHours() * 60 + now.getMinutes();
-  const todayIdx = now.getDay();
+  // Heure locale de Brazzaville (indépendante du fuseau du serveur).
+  const localNow = nowInBrazzaville(now);
+  const nowMin = localNow.getHours() * 60 + localNow.getMinutes();
+  const todayIdx = localNow.getDay();
   const prep = Math.max(0, Math.floor(Number(prepMinutes) || 0));
 
   // Plage active actuellement (mêmes règles que computeOuverture).
@@ -146,8 +168,10 @@ function computeOuverture(horaires, now = new Date()) {
     return { ouvert: false, prochaineOuverture: null, prochaineLabel: null };
   }
 
-  const nowMin = now.getHours() * 60 + now.getMinutes();
-  const todayIdx = now.getDay();
+  // Heure locale de Brazzaville (indépendante du fuseau du serveur).
+  const localNow = nowInBrazzaville(now);
+  const nowMin = localNow.getHours() * 60 + localNow.getMinutes();
+  const todayIdx = localNow.getDay();
 
   const isInWindow = (win, dayIdx) => {
     if (Number(win.jour) !== dayIdx) return false;
@@ -165,7 +189,9 @@ function computeOuverture(horaires, now = new Date()) {
   let prochaine = null;
   let prochaineLabel = null;
   for (let offset = 0; offset <= 7 && !prochaine; offset += 1) {
-    const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset);
+    // Construit à partir des champs murals de Brazzaville pour rester
+    // cohérent avec `todayIdx` (jour local, pas jour serveur).
+    const day = new Date(localNow.getFullYear(), localNow.getMonth(), localNow.getDate() + offset);
     const dayIdx = day.getDay();
     const starts = list
       .filter((w) => Number(w.jour) === dayIdx)

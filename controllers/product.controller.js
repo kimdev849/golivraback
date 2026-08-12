@@ -2,6 +2,7 @@ const { getDb } = require('../config/db');
 const { createHttpError, requireFields } = require('../utils/http');
 const { getUserScores, personalizeResults } = require('../services/personalization.service');
 const { loadCategoryNameMap } = require('./product-category.controller');
+const { resolveStoredImage } = require('../utils/images');
 
 const ACTIVE = 'active';
 
@@ -228,7 +229,7 @@ function parseImagesUrls(imagesUrls, imageUrl) {
   return list;
 }
 
-function mapPlatToProduct(p, enterpriseId, categoryNames) {
+function mapPlatToProduct(p, enterpriseId, categoryNames, resolveBytea = true) {
   let stock = null;
   if (p.stock !== null && p.stock !== undefined) stock = Math.max(0, Number(p.stock));
   if (p.est_disponible === false) stock = 0;
@@ -245,7 +246,7 @@ function mapPlatToProduct(p, enterpriseId, categoryNames) {
     stock_illimite: p.stock === null || p.stock === undefined,
     est_disponible: p.est_disponible !== false,
     est_en_vedette: p.est_en_vedette === true,
-    image_url: p.image_url ?? null,
+    image_url: resolveBytea ? resolveStoredImage(p.image_url, p.image, p.image_mime) : p.image_url ?? null,
     images_urls: normalizeImagesUrls(p.images_urls),
     categorie_id: p.categorie_id ?? null,
     categorie_nom: p.categorie_id && categoryNames ? categoryNames.get(p.categorie_id) ?? null : null,
@@ -259,7 +260,7 @@ function mapPlatToProduct(p, enterpriseId, categoryNames) {
   };
 }
 
-function mapArticleToProduct(a, enterpriseId, categoryNames) {
+function mapArticleToProduct(a, enterpriseId, categoryNames, resolveBytea = true) {
   let stock = null;
   if (a.stock !== null && a.stock !== undefined) stock = Math.max(0, Number(a.stock));
   if (!a.est_disponible) stock = 0;
@@ -276,7 +277,7 @@ function mapArticleToProduct(a, enterpriseId, categoryNames) {
     stock_illimite: a.stock === null || a.stock === undefined,
     est_disponible: a.est_disponible !== false,
     est_en_vedette: a.est_en_vedette === true,
-    image_url: a.image_url ?? null,
+    image_url: resolveBytea ? resolveStoredImage(a.image_url, a.image, a.image_mime) : a.image_url ?? null,
     images_urls: normalizeImagesUrls(a.images_urls),
     kind: 'article',
     options: a.options ?? null,
@@ -514,13 +515,15 @@ async function listProductFeed(req, res, next) {
       const restIds = [...restById.keys()];
       if (restIds.length) {
         try {
-          const rows = await fetchRowsByIdsInChunks(db, 'plats', 'restaurant_id', restIds, (q) =>
-            onlyPromo ? q.not('prix_promo', 'is', null) : q,
-          );
+          const rows = await fetchRowsByIdsInChunks(db, 'plats', 'restaurant_id', restIds, (q) => {
+            let query = q.eq('est_disponible', true);
+            if (onlyPromo) query = query.not('prix_promo', 'is', null);
+            return query;
+          });
           for (const p of rows) {
             const rest = restById.get(p.restaurant_id);
             if (!rest) continue;
-            out.push({ ...mapPlatToProduct(p, p.restaurant_id, categoryNames), enterprise_id: p.restaurant_id, enterprise_nom: rest.nom || null, enterprise_type: 'restaurant', enterprise_image_url: enterpriseImageUrl(rest) });
+            out.push({ ...mapPlatToProduct(p, p.restaurant_id, categoryNames, false), enterprise_id: p.restaurant_id, enterprise_nom: rest.nom || null, enterprise_type: 'restaurant', enterprise_image_url: enterpriseImageUrl(rest) });
           }
         } catch (subErr) {
           // Un échec sur les plats ne doit pas faire planter tout le feed.
@@ -534,13 +537,15 @@ async function listProductFeed(req, res, next) {
       const boutIds = [...boutById.keys()];
       if (boutIds.length) {
         try {
-          const rows = await fetchRowsByIdsInChunks(db, 'articles', 'boutique_id', boutIds, (q) =>
-            onlyPromo ? q.not('prix_promo', 'is', null) : q,
-          );
+          const rows = await fetchRowsByIdsInChunks(db, 'articles', 'boutique_id', boutIds, (q) => {
+            let query = q.eq('est_disponible', true);
+            if (onlyPromo) query = query.not('prix_promo', 'is', null);
+            return query;
+          });
           for (const a of rows) {
             const bou = boutById.get(a.boutique_id);
             if (!bou) continue;
-            out.push({ ...mapArticleToProduct(a, a.boutique_id, categoryNames), enterprise_id: a.boutique_id, enterprise_nom: bou.nom || null, enterprise_type: 'boutique', enterprise_image_url: enterpriseImageUrl(bou) });
+            out.push({ ...mapArticleToProduct(a, a.boutique_id, categoryNames, false), enterprise_id: a.boutique_id, enterprise_nom: bou.nom || null, enterprise_type: 'boutique', enterprise_image_url: enterpriseImageUrl(bou) });
           }
         } catch (subErr) {
           // Un échec sur les articles ne doit pas faire planter tout le feed.
@@ -599,7 +604,7 @@ async function searchCatalog(req, res, next) {
         let platsRows = [];
         try {
           platsRows = await fetchRowsByIdsInChunks(db, 'plats', 'restaurant_id', restIds, (q) =>
-            q.or(`nom.ilike.${pattern},description.ilike.${pattern}`).limit(limit),
+            q.eq('est_disponible', true).or(`nom.ilike.${pattern},description.ilike.${pattern}`).limit(limit),
           );
         } catch (subErr) {
           recordFeedSubError(req, 'search_plats', subErr);
@@ -607,7 +612,7 @@ async function searchCatalog(req, res, next) {
         for (const p of platsRows) {
           const rest = restById.get(p.restaurant_id);
           if (!rest) continue;
-          products.push({ ...mapPlatToProduct(p, p.restaurant_id, categoryNames), enterprise_id: p.restaurant_id, enterprise_nom: rest.nom || null, enterprise_type: 'restaurant', enterprise_image_url: enterpriseImageUrl(rest) });
+          products.push({ ...mapPlatToProduct(p, p.restaurant_id, categoryNames, false), enterprise_id: p.restaurant_id, enterprise_nom: rest.nom || null, enterprise_type: 'restaurant', enterprise_image_url: enterpriseImageUrl(rest) });
         }
       }
     }
@@ -619,7 +624,7 @@ async function searchCatalog(req, res, next) {
         let articlesRows = [];
         try {
           articlesRows = await fetchRowsByIdsInChunks(db, 'articles', 'boutique_id', boutIds, (q) =>
-            q.or(`nom.ilike.${pattern},description.ilike.${pattern}`).limit(limit),
+            q.eq('est_disponible', true).or(`nom.ilike.${pattern},description.ilike.${pattern}`).limit(limit),
           );
         } catch (subErr) {
           recordFeedSubError(req, 'search_articles', subErr);
@@ -627,7 +632,7 @@ async function searchCatalog(req, res, next) {
         for (const a of articlesRows) {
           const bou = boutById.get(a.boutique_id);
           if (!bou) continue;
-          products.push({ ...mapArticleToProduct(a, a.boutique_id, categoryNames), enterprise_id: a.boutique_id, enterprise_nom: bou.nom || null, enterprise_type: 'boutique', enterprise_image_url: enterpriseImageUrl(bou) });
+          products.push({ ...mapArticleToProduct(a, a.boutique_id, categoryNames, false), enterprise_id: a.boutique_id, enterprise_nom: bou.nom || null, enterprise_type: 'boutique', enterprise_image_url: enterpriseImageUrl(bou) });
         }
       }
     }

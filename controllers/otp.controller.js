@@ -27,7 +27,7 @@ function isTwilioConfigured() {
 
 async function requestOtp(req, res, next) {
   try {
-    const { telephone: telephoneRaw } = req.body;
+    const { telephone: telephoneRaw, purpose } = req.body;
     requireFields(req.body, ['telephone']);
 
     const telephone = normalizeCgE164(telephoneRaw);
@@ -38,9 +38,31 @@ async function requestOtp(req, res, next) {
       );
     }
 
+    const db = getDb();
+
+    // Pour la réinitialisation du mot de passe, on vérifie d'abord que le
+    // numéro est bien lié à un compte existant AVANT d'envoyer le code :
+    // aucun OTP n'est émis pour un numéro inconnu.
+    if (purpose === 'reset_password') {
+      const { data: user, error: userErr } = await db
+        .from('utilisateurs')
+        .select('id, est_actif, est_supprime')
+        .eq('telephone', telephone)
+        .maybeSingle();
+      if (userErr) throw userErr;
+      if (!user) {
+        throw createHttpError(404, 'Aucun compte associé à ce numéro.');
+      }
+      if (user.est_supprime === true) {
+        throw createHttpError(410, 'Ce compte a été supprimé.');
+      }
+      if (user.est_actif === false) {
+        throw createHttpError(403, 'Ce compte est désactivé.');
+      }
+    }
+
     const code = buildOtpCode();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-    const db = getDb();
 
     const { error } = await insertOtp(db, { telephone, code, expiresAt });
     if (error) {

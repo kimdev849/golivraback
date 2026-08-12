@@ -17,6 +17,9 @@ function deliverySnapshotFromPayload(body) {
     if (!quartier || ligne1.length < 4) {
       throw createHttpError(400, 'Quartier et adresse détaillée obligatoires.');
     }
+    // Rejet des adresses de test absurdes (« @##fff », « 555@#$$kk » …).
+    const { requireValid, validateAddress } = require('../lib/validators');
+    requireValid(ligne1, (v) => validateAddress(v, true), 'adresse.ligne1');
     const texte = formatAddressText({
       quartier,
       ligne1,
@@ -166,6 +169,14 @@ async function createExternalDelivery(db, userId, payload) {
   if (!clientTelephone || !String(clientTelephone).trim()) {
     throw createHttpError(400, 'Le téléphone du client est requis.');
   }
+  // Validation stricte du numéro (E.164 Congo) : un numéro invalide ou trop
+  // long ne doit pas permettre de créer une livraison.
+  const { requireValid, validatePhoneCg } = require('../lib/validators');
+  const clientTelephoneClean = requireValid(
+    String(clientTelephone).trim(),
+    validatePhoneCg,
+    'clientTelephone',
+  );
   if (methodePaiement !== 'mtn_money' && methodePaiement !== 'airtel_money') {
     throw createHttpError(400, 'Choisissez une méthode de paiement (Airtel Money ou MTN MoMo).');
   }
@@ -231,7 +242,7 @@ async function createExternalDelivery(db, userId, payload) {
     restaurant_id: establishmentType === 'restaurant' ? establishmentId : null,
     boutique_id: establishmentType === 'boutique' ? establishmentId : null,
     client_nom: String(clientNom).trim(),
-    client_telephone: String(clientTelephone).trim(),
+    client_telephone: clientTelephoneClean,
     montant_total: fraisLivraison,
     note: note ? String(note).trim() : null,
     statut: 'en_attente',

@@ -56,15 +56,10 @@ function validateAddressBody(body, { requireAll = true } = {}) {
 
   if (requireAll) {
     if (!quartier) throw createHttpError(400, 'Le quartier est obligatoire.');
-    if (!ligne1 || ligne1.length < 5) {
-      throw createHttpError(400, 'Décrivez votre adresse (rue, repère, immeuble…).');
-    }
-    if (/^[0-9\s]+$/.test(ligne1)) {
-      throw createHttpError(400, 'Adresse invalide (pas uniquement des chiffres).');
-    }
-    if (!/\p{L}/u.test(ligne1)) {
-      throw createHttpError(400, 'L\'adresse doit contenir au moins une lettre (rue, repère ou quartier).');
-    }
+    if (!ligne1) throw createHttpError(400, 'Décrivez votre adresse (rue, repère, immeuble…).');
+    // Mêmes règles que côté mobile (deliveryAddressError) : rejette aussi les
+    // saisies absurdes du type « @##fff » ou « 555@#$$kk ».
+    validators.requireValid(ligne1, (v) => validators.validateAddress(v, true), 'ligne1');
   }
 
   return {
