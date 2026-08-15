@@ -86,8 +86,14 @@ async function resolveDeliveryAddress(db, clientId, payload) {
     if (!ligne1) {
       throw createHttpError(400, 'Indiquez une adresse détaillée de livraison.');
     }
-    const { requireValid, validateAddress } = require('../lib/validators');
+    const { requireValid, validateAddress, validateLandmark } = require('../lib/validators');
     requireValid(ligne1, (v) => validateAddress(v, true), 'adresse.ligne1');
+    // Point de repère / Instructions livreur (optionnels) : mêmes règles
+    // anti-poubelle que côté mobile (« @#####^ », « !!! » refusés).
+    const pointReperesRaw = String(adresseStruct.point_reperes || '').trim();
+    if (pointReperesRaw) requireValid(pointReperesRaw, validateLandmark, 'adresse.point_reperes');
+    const instructionsRaw = String(adresseStruct.instructions || '').trim();
+    if (instructionsRaw) requireValid(instructionsRaw, validateLandmark, 'adresse.instructions');
     const snap = snapshotAddress(adresseStruct);
     if (!snap.texte || snap.texte.length < 8) {
       throw createHttpError(400, 'Complétez le quartier et la description de livraison.');
@@ -135,14 +141,34 @@ function resolveModeLivraison(_establishmentRow) {
   return 'golivra';
 }
 
+/** Quantité maximale par article dans une commande (anti-valeurs absurdes). */
+const MAX_LINE_QUANTITE = 999;
+
+/**
+ * Valide strictement la quantité d'une ligne de commande : entier positif,
+ * fini (pas de NaN / Infinity), borné. Le client ne doit pas pouvoir injecter
+ * `NaN`, `Infinity`, des négatifs ou des décimaux : on refuse avec une 400 au
+ * lieu de corriger silencieusement (sinon des totaux NaN entreraient en base).
+ */
+function parseLineQuantite(quantite) {
+  const n = Number(quantite);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < 1) {
+    throw createHttpError(400, 'Quantité invalide : entier positif attendu (minimum 1).');
+  }
+  if (n > MAX_LINE_QUANTITE) {
+    throw createHttpError(400, `Quantité trop élevée (maximum ${MAX_LINE_QUANTITE} par article).`);
+  }
+  return n;
+}
+
 async function buildLinesForSegment(db, kind, entrepriseId, articles) {
   const lines = [];
   let sousTotal = 0;
 
   for (const article of articles) {
     const { itemId, quantite, optionsChoisies } = article;
-    const q = Math.max(1, Math.floor(Number(quantite)));
     if (!itemId) throw createHttpError(400, 'Chaque article doit avoir itemId');
+    const q = parseLineQuantite(quantite);
 
     if (kind === 'restaurant') {
       const { data: plat, error: pErr } = await db.from('plats').select('*').eq('id', itemId).maybeSingle();

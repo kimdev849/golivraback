@@ -104,6 +104,33 @@ async function notifyOrderCreated(db, commandeId, clientId) {
     corps,
     data: { commande_id: commandeId, action: 'open_orders' },
   });
+
+  // 🔔 NOUVEAU : prévenir AUSSI les commerces qu'une commande les attend.
+  // Avant, seul le client était notifié à la création ; le vendeur ne
+  // découvrait la commande qu'au rappel de 3 min (souvent trop tard dans le
+  // délai de 5 min) → la commande expirait sans réponse. Maintenant chaque
+  // commerce est prévenu immédiatement, en push (app fermée incluse).
+  const { data: allScs } = await db
+    .from('sous_commandes')
+    .select('id, restaurant_id, boutique_id')
+    .eq('commande_id', commandeId);
+  const ownerIds = new Set();
+  for (const sc of allScs || []) {
+    if (sc.restaurant_id) {
+      const { data: r } = await db.from('restaurants').select('proprietaire_id').eq('id', sc.restaurant_id).maybeSingle();
+      if (r?.proprietaire_id) ownerIds.add(r.proprietaire_id);
+    }
+    if (sc.boutique_id) {
+      const { data: b } = await db.from('boutiques').select('proprietaire_id').eq('id', sc.boutique_id).maybeSingle();
+      if (b?.proprietaire_id) ownerIds.add(b.proprietaire_id);
+    }
+  }
+  await notifyVendors(db, [...ownerIds], {
+    type: 'commande_nouvelle',
+    titre: '🛎️ Nouvelle commande',
+    corps: 'Un client vient de commander. Vous avez 5 minutes pour accepter ou refuser.',
+    data: { commande_id: commandeId, action: 'vendor_orders' },
+  });
 }
 
 async function notifyPaymentConfirmed(db, commandeId, clientId) {

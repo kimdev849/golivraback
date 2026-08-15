@@ -33,9 +33,22 @@ function validateAddressBody(body, { requireAll = true } = {}) {
   const validators = require('../lib/validators');
   const quartier = typeof body.quartier === 'string' ? validators.sanitizeText(body.quartier) : '';
   const ligne1 = typeof body.ligne1 === 'string' ? validators.sanitizeText(body.ligne1) : '';
-  const instructions = typeof body.instructions === 'string' ? validators.sanitizeText(body.instructions) : null;
-  const point_reperes = typeof body.point_reperes === 'string' ? validators.sanitizeText(body.point_reperes) : null;
-  const libelle = typeof body.libelle === 'string' ? validators.sanitizeText(body.libelle) : null;
+  // Point de repère / Instructions livreur (optionnels) : s'ils sont saisis, pas
+  // de poubelle (« @#####^ », « !!! », « 12345 » refusés) — miroir de
+  // `validateLandmark` mobile (form-validation.ts).
+  const instructionsRaw = typeof body.instructions === 'string' ? validators.sanitizeText(body.instructions) : '';
+  const pointReperesRaw = typeof body.point_reperes === 'string' ? validators.sanitizeText(body.point_reperes) : '';
+  const instructions = instructionsRaw
+    ? validators.requireValid(instructionsRaw, validators.validateLandmark, 'instructions')
+    : null;
+  const point_reperes = pointReperesRaw
+    ? validators.requireValid(pointReperesRaw, validators.validateLandmark, 'point_reperes')
+    : null;
+  // Nom de l'adresse (optionnel) : s'il est saisi, il doit être un vrai nom
+  // (« Maison », « Travail », « Chez maman »…) — pas des symboles comme
+  // « @$%3ddf ». Vide → repli sur le quartier / « Domicile ».
+  const libelleRaw = typeof body.libelle === 'string' ? validators.sanitizeText(body.libelle) : '';
+  const libelle = libelleRaw ? validators.requireValid(libelleRaw, validators.validateAddressLabel, 'libelle') : null;
   const type = typeof body.type === 'string' ? body.type.trim() : 'domicile';
   const ville = typeof body.ville === 'string' && body.ville.trim() ? validators.sanitizeText(body.ville) : 'Brazzaville';
   const pays = typeof body.pays === 'string' && body.pays.trim() ? validators.sanitizeText(body.pays) : 'Congo';

@@ -35,17 +35,23 @@ CREATE TRIGGER trg_push_tokens_updated_at
 ALTER TABLE push_tokens ENABLE ROW LEVEL SECURITY;
 
 -- La clé service_role (backend) bypass RLS, pas besoin de policy pour lui.
+-- PostgreSQL ne supporte pas « CREATE POLICY IF NOT EXISTS » (42601) :
+-- on supprime puis on recrée (idempotent — exécution multiple OK).
+
 -- Policy lecture : un user ne peut lire que ses tokens (inutile côté app mais safe)
+DROP POLICY IF EXISTS "push_tokens_owner_select" ON push_tokens;
 CREATE POLICY "push_tokens_owner_select"
   ON push_tokens FOR SELECT
   USING (auth.uid() = utilisateur_id);
 
 -- Policy insert : uniquement pour ses propres tokens
+DROP POLICY IF EXISTS "push_tokens_owner_insert" ON push_tokens;
 CREATE POLICY "push_tokens_owner_insert"
   ON push_tokens FOR INSERT
   WITH CHECK (auth.uid() = utilisateur_id);
 
 -- Policy delete : uniquement les siens
+DROP POLICY IF EXISTS "push_tokens_owner_delete" ON push_tokens;
 CREATE POLICY "push_tokens_owner_delete"
   ON push_tokens FOR DELETE
   USING (auth.uid() = utilisateur_id);

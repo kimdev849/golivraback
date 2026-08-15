@@ -18,8 +18,17 @@ function deliverySnapshotFromPayload(body) {
       throw createHttpError(400, 'Quartier et adresse détaillée obligatoires.');
     }
     // Rejet des adresses de test absurdes (« @##fff », « 555@#$$kk » …).
-    const { requireValid, validateAddress } = require('../lib/validators');
+    const { requireValid, validateAddress, validateAddressLabel, validateLandmark } = require('../lib/validators');
     requireValid(ligne1, (v) => validateAddress(v, true), 'adresse.ligne1');
+    // Nom de l'adresse (optionnel) : s'il est saisi, il doit être un vrai nom.
+    const libelleRaw = typeof body.adresse.libelle === 'string' ? String(body.adresse.libelle).trim() : '';
+    if (libelleRaw) requireValid(libelleRaw, validateAddressLabel, 'adresse.libelle');
+    // Point de repère / Instructions livreur (optionnels) : pas de poubelle
+    // (« @#####^ », « !!! », « 12345 » refusés).
+    const pointReperesRaw = typeof body.adresse.point_reperes === 'string' ? String(body.adresse.point_reperes).trim() : '';
+    if (pointReperesRaw) requireValid(pointReperesRaw, validateLandmark, 'adresse.point_reperes');
+    const instructionsRaw = typeof body.adresse.instructions === 'string' ? String(body.adresse.instructions).trim() : '';
+    if (instructionsRaw) requireValid(instructionsRaw, validateLandmark, 'adresse.instructions');
     const texte = formatAddressText({
       quartier,
       ligne1,

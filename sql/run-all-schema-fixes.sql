@@ -271,7 +271,58 @@ CREATE INDEX IF NOT EXISTS idx_commandes_acceptation_limite
   WHERE statut IN ('en_attente', 'partiellement_acceptee');
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- 9. RAPPEL FINAL
+-- 9. PUSH NOTIFICATIONS : table push_tokens (indispensable pour les push)
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Sans cette table, l'enregistrement du token échoue silencieusement (500) et
+-- AUCUNE push notification n'est envoyée — l'app ne reçoit rien quand elle est
+-- fermée. Idempotent : exécution multiple OK.
+CREATE TABLE IF NOT EXISTS push_tokens (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  utilisateur_id  UUID NOT NULL REFERENCES utilisateurs(id) ON DELETE CASCADE,
+  token           TEXT NOT NULL,
+  platform        TEXT NOT NULL CHECK (platform IN ('ios', 'android', 'web')),
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (utilisateur_id, token)
+);
+
+CREATE INDEX IF NOT EXISTS idx_push_tokens_user
+  ON push_tokens (utilisateur_id);
+
+CREATE OR REPLACE FUNCTION update_push_tokens_updated_at()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_push_tokens_updated_at ON push_tokens;
+CREATE TRIGGER trg_push_tokens_updated_at
+  BEFORE UPDATE ON push_tokens
+  FOR EACH ROW EXECUTE FUNCTION update_push_tokens_updated_at();
+
+ALTER TABLE push_tokens ENABLE ROW LEVEL SECURITY;
+
+-- PostgreSQL ne supporte PAS « CREATE POLICY IF NOT EXISTS » (42601) :
+-- on supprime puis on recrée (idempotent — exécution multiple OK).
+DROP POLICY IF EXISTS "push_tokens_owner_select" ON push_tokens;
+CREATE POLICY "push_tokens_owner_select"
+  ON push_tokens FOR SELECT
+  USING (auth.uid() = utilisateur_id);
+
+DROP POLICY IF EXISTS "push_tokens_owner_insert" ON push_tokens;
+CREATE POLICY "push_tokens_owner_insert"
+  ON push_tokens FOR INSERT
+  WITH CHECK (auth.uid() = utilisateur_id);
+
+DROP POLICY IF EXISTS "push_tokens_owner_delete" ON push_tokens;
+CREATE POLICY "push_tokens_owner_delete"
+  ON push_tokens FOR DELETE
+  USING (auth.uid() = utilisateur_id);
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 10. RAPPEL FINAL
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 1) Supabase → Project Settings → API → « Reload schema »
 -- 2) Redéployez l'API (Render) pour vider le cache PostgREST.
