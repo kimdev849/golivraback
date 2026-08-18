@@ -43,7 +43,7 @@ async function notifyAvailableCouriersForDelivery(db, livraisonId) {
 
   // Push fire-and-forget
   void sendPushToUsers(db, userIds, {
-    title: 'Nouvelle course disponible 🚗',
+    title: 'Nouvelle course disponible',
     body: 'Une livraison vous attend. Ouvrez l\'app livreur pour l\'accepter.',
     data: { livraison_id: livraisonId, action: 'open_delivery' },
   });

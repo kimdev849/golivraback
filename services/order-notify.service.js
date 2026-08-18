@@ -100,7 +100,7 @@ async function notifyOrderCreated(db, commandeId, clientId) {
     : `Nous avons envoyé votre commande. ${qui} a 5 minutes pour la confirmer. Vous ne serez débité qu'après acceptation.`;
   await notifyClient(db, clientId, {
     type: 'commande_nouvelle',
-    titre: 'Commande envoyée 🛍️',
+    titre: 'Commande envoyée',
     corps,
     data: { commande_id: commandeId, action: 'open_orders' },
   });
@@ -127,7 +127,7 @@ async function notifyOrderCreated(db, commandeId, clientId) {
   }
   await notifyVendors(db, [...ownerIds], {
     type: 'commande_nouvelle',
-    titre: '🛎️ Nouvelle commande',
+    titre: 'Nouvelle commande',
     corps: 'Un client vient de commander. Vous avez 5 minutes pour accepter ou refuser.',
     data: { commande_id: commandeId, action: 'vendor_orders' },
   });
@@ -298,7 +298,7 @@ async function notifyPaymentRequired(db, commandeId, clientId, montantFcfa) {
   if (!clientId) return;
   await notifyClient(db, clientId, {
     type: 'paiement',
-    titre: '💳 Paiement requis',
+    titre: 'Paiement requis',
     corps: `Votre commande a été acceptée. Confirmez le paiement de ${Number(montantFcfa || 0).toLocaleString('fr-FR')} FCFA — vous avez 5 minutes.`, 
     data: { commande_id: commandeId, action: 'open_order_tracking' },
   });
@@ -333,7 +333,7 @@ async function notifyAcceptanceReminder(db, commandeId) {
   if (ownerIds.size === 0) return;
   await notifyVendors(db, [...ownerIds], {
     type: 'commande_nouvelle',
-    titre: '⏱️ Réponse attendue',
+    titre: 'Réponse attendue',
     corps: "Il vous reste moins de 3 minutes pour accepter la commande, sinon elle sera automatiquement annulée.",
     data: { commande_id: commandeId, action: 'vendor_orders' },
   });
