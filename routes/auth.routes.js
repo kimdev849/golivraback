@@ -10,6 +10,7 @@ const {
   changePassword,
   resetPassword,
   deleteAccount,
+  exportMyData,
   getMyPreferences,
   patchMyPreferences,
 } = require('../controllers/auth.controller');
@@ -29,6 +30,7 @@ router.get('/preferences', authMiddleware, getMyPreferences);
 router.patch('/preferences', authMiddleware, patchMyPreferences);
 router.post('/change-password', authMiddleware, changePassword);
 router.post('/logout', authMiddleware, logout);
+router.get('/data-export', authMiddleware, exportMyData);
 router.delete('/account', authMiddleware, deleteAccount);
 router.post('/delete-account', authMiddleware, deleteAccount);
 

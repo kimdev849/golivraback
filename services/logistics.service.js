@@ -77,8 +77,8 @@ async function getRoleId(db, roleName) {
 }
 
 async function createUserWithRole(db, { nom, roleName, email, telephone, motDePasse, estApprouve = true }) {
-  if (typeof motDePasse !== 'string' || motDePasse.length < 6) {
-    throw createHttpError(400, 'Mot de passe requis (6 caractères minimum).');
+  if (typeof motDePasse !== 'string' || motDePasse.length < 8) {
+    throw createHttpError(400, 'Mot de passe requis (8 caractères minimum).');
   }
 
   const roleId = await getRoleId(db, roleName);

@@ -381,28 +381,30 @@ async function patchEnterprise(req, res, next) {
           body.adresseQuartier !== undefined
             ? String(body.adresseQuartier || '')
             : String(row.adresse_quartier || '');
-        const ligne1Clean = validators.sanitizeText(ligne1);
+        let ligne1Clean = validators.sanitizeText(ligne1);
         const quartierClean = validators.sanitizeText(quartier);
         // Adresse : OBLIGATOIRE pour un restaurant (livraison sur place), OPTIONNELLE pour une boutique (e-commerce).
         // Une boutique sans adresse peut enregistrer sa fiche (nom, description, téléphone) sans bloquer.
+        // Même validation que la création (validateAddress) : poubelle, symboles
+        // de tête, HTML/scripts — pas seulement la longueur.
         const isRestaurant = table === 'restaurants';
         if (isRestaurant) {
           if (!quartierClean) {
             throw createHttpError(400, 'Le quartier (arrondissement) est obligatoire.');
           }
-          if (ligne1Clean.length < 5) {
-            throw createHttpError(400, 'Adresse détaillée trop courte (minimum 5 caractères).');
-          }
-          if (/^[0-9\s]+$/.test(ligne1Clean)) {
-            throw createHttpError(400, 'Adresse invalide (pas uniquement des chiffres).');
-          }
+          ligne1Clean = validators.requireValid(
+            ligne1Clean,
+            (v) => validators.validateAddress(v, true),
+            'adresse',
+          );
         } else if (ligne1Clean.length > 0 || quartierClean.length > 0) {
-          // Boutique : si une adresse est renseignée, elle doit être exploitable, sinon on la laisse vide.
-          if (ligne1Clean && ligne1Clean.length < 5) {
-            throw createHttpError(400, 'Adresse détaillée trop courte (minimum 5 caractères).');
-          }
-          if (ligne1Clean && /^[0-9\s]+$/.test(ligne1Clean)) {
-            throw createHttpError(400, 'Adresse invalide (pas uniquement des chiffres).');
+          // Boutique : si une adresse est renseignée, elle doit être exploitable.
+          if (ligne1Clean) {
+            ligne1Clean = validators.requireValid(
+              ligne1Clean,
+              (v) => validators.validateAddress(v, true),
+              'adresse',
+            );
           }
         }
         updates.adresse_ligne1 = ligne1Clean;

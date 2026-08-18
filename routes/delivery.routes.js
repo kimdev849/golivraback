@@ -13,6 +13,7 @@ const {
   advanceDelivery,
   completeDelivery,
 } = require('../controllers/delivery.controller');
+const { getAdminActiveTracking } = require('../controllers/tracking.controller');
 const {
   createVendorExternalDelivery,
   listVendorExternalDeliveriesHandler,
@@ -22,6 +23,7 @@ const {
 const router = express.Router();
 
 router.get('/status/:orderId', authMiddleware, getDeliveryStatus);
+router.get('/tracking/active', authMiddleware, requireRoles(['admin']), getAdminActiveTracking);
 router.get('/:deliveryId/details', authMiddleware, getDeliveryDetails);
 router.get(
   '/vendor/externe',

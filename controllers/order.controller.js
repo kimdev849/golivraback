@@ -243,6 +243,8 @@ async function mapVendorOrderRow(db, sc, commande, client) {
     })),
     livreur: livreur || undefined,
     livraison_statut: livraison?.statut ?? null,
+    // Id de la livraison : permet au commerce d'ouvrir le suivi temps réel du livreur.
+    livraison_id: livraison?.id ?? null,
     paiement_statut: paiementStatut,
     paiement_limite_at: commande.paiement_limite_at ?? null,
     created_at: commande.created_at,
@@ -495,7 +497,7 @@ async function getOrderDetails(req, res, next) {
 
     const scIds = (sousCommandes || []).map((s) => s.id);
     const { data: livraisons } = scIds.length
-      ? await db.from('livraisons').select('id, statut, type_livraison').in('sous_commande_id', scIds)
+      ? await db.from('livraisons').select('*').in('sous_commande_id', scIds)
       : { data: [] };
 
     const livraisonBySc = new Map();
@@ -553,6 +555,62 @@ async function getOrderDetails(req, res, next) {
 
     const eta = await computeOrderEta(db, order, enriched);
 
+    // ── Suivi en direct : livreur + distance jusqu'à l'adresse client ──
+    // Position partagée par le livreur UNIQUEMENT pendant sa course (l'app
+    // livreur l'arrête dès la livraison terminée).
+    const primaryLivraison = livraisons && livraisons[0] ? livraisons[0] : null;
+    let livreur = null;
+    let distanceKm = null;
+    if (primaryLivraison?.livreur_id) {
+      const { data: lr } = await db
+        .from('livreurs')
+        .select('id, note_moyenne, utilisateur_id, latitude_actuelle, longitude_actuelle, derniere_position_at')
+        .eq('id', primaryLivraison.livreur_id)
+        .maybeSingle();
+      let utilisateur = null;
+      if (lr?.utilisateur_id) {
+        const { data: u } = await db
+          .from('utilisateurs')
+          .select('nom, telephone, avatar_url')
+          .eq('id', lr.utilisateur_id)
+          .maybeSingle();
+        utilisateur = u;
+      }
+      const pos =
+        lr?.latitude_actuelle != null && lr?.longitude_actuelle != null
+          ? {
+              latitude: Number(lr.latitude_actuelle),
+              longitude: Number(lr.longitude_actuelle),
+              at: lr.derniere_position_at || null,
+            }
+          : null;
+      livreur = {
+        nom: utilisateur?.nom || 'Livreur',
+        telephone: utilisateur?.telephone || '',
+        image_url:
+          utilisateur?.avatar_url && String(utilisateur.avatar_url).trim().startsWith('http')
+            ? String(utilisateur.avatar_url).trim()
+            : null,
+        note_moyenne: lr?.note_moyenne != null ? Number(lr.note_moyenne) : null,
+        position_actuelle: pos,
+      };
+      // Distance du livreur → adresse de livraison (coordonnées que le client
+      // a enregistrées avec son adresse — pas de géocodage).
+      const lat = Number(primaryLivraison.latitude_livraison);
+      const lng = Number(primaryLivraison.longitude_livraison);
+      if (
+        pos &&
+        Number.isFinite(lat) &&
+        Number.isFinite(lng) &&
+        Number.isFinite(pos.latitude) &&
+        Number.isFinite(pos.longitude)
+      ) {
+        const { haversineKm } = require('../services/dispatch.service');
+        distanceKm = haversineKm(pos.latitude, pos.longitude, lat, lng);
+        if (Number.isFinite(distanceKm)) distanceKm = Number(distanceKm.toFixed(2));
+      }
+    }
+
     return res.json({
       ...mapCommandeListRow(order, eid),
       sousCommandes: enriched,
@@ -563,6 +621,8 @@ async function getOrderDetails(req, res, next) {
       annulation_motif: order.annulation_motif ?? null,
       total_a_payer: totalAPayer,
       livraisons: (livraisons || []).map((l) => ({ id: l.id, statut: l.statut, type_livraison: l.type_livraison })),
+      livreur,
+      distance_km: distanceKm,
     });
   } catch (error) {
     return next(error);

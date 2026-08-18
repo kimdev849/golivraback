@@ -66,6 +66,10 @@ async function mapCourierMissionRow(db, liv) {
       montant_total: liv.montant_total != null ? Number(liv.montant_total) : null,
       note: liv.note || null,
       proof_photo_url: liv.proof_photo_url || null,
+      // Destination de la course : permet au livreur d'adapter sa fréquence de
+      // partage (15 s quand il approche, 30 s sinon) et au client de suivre la distance.
+      latitude_livraison: liv.latitude_livraison != null ? Number(liv.latitude_livraison) : null,
+      longitude_livraison: liv.longitude_livraison != null ? Number(liv.longitude_livraison) : null,
       commande: null,
     };
   }
@@ -114,6 +118,9 @@ async function mapCourierMissionRow(db, liv) {
     adresse_retrait: adresseRetrait,
     commerce_nom: commerceNom,
     proof_photo_url: liv.proof_photo_url || null,
+    // Destination de la course (fréquence de partage adaptative côté livreur).
+    latitude_livraison: liv.latitude_livraison != null ? Number(liv.latitude_livraison) : null,
+    longitude_livraison: liv.longitude_livraison != null ? Number(liv.longitude_livraison) : null,
     commande,
   };
 }
@@ -739,6 +746,8 @@ function mapCourierMissionRowMinimal(liv) {
     adresse_livraison: addr,
     adresse_retrait: '',
     proof_photo_url: liv.proof_photo_url || null,
+    latitude_livraison: liv.latitude_livraison != null ? Number(liv.latitude_livraison) : null,
+    longitude_livraison: liv.longitude_livraison != null ? Number(liv.longitude_livraison) : null,
     commande: null,
     ouverte: false,
   };

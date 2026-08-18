@@ -47,7 +47,7 @@ function snapshotAddress(input) {
       ville: input.ville || 'Brazzaville',
       pays: input.pays || 'Congo',
     });
-    return {
+    const snap = {
       version: 2,
       texte,
       quartier: quartier || null,
@@ -57,6 +57,16 @@ function snapshotAddress(input) {
       ville: input.ville || 'Brazzaville',
       pays: input.pays || 'Congo',
     };
+    // Coordonnées GPS de l'adresse (si connues — jamais géocodées, juste les
+    // coordonnées que le client a déjà enregistrées) : elles permettent au
+    // client de suivre la distance du livreur jusqu'à son adresse.
+    const lat = Number(input.latitude);
+    const lng = Number(input.longitude);
+    if (Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180) {
+      snap.latitude = Number(lat.toFixed(8));
+      snap.longitude = Number(lng.toFixed(8));
+    }
+    return snap;
   }
   const texte = String(input || '').trim();
   return { texte, version: 1 };
@@ -74,6 +84,8 @@ async function resolveDeliveryAddress(db, clientId, payload) {
       point_reperes: row.point_reperes,
       ville: row.ville,
       pays: row.pays,
+      latitude: row.latitude,
+      longitude: row.longitude,
     });
     return { snap, id: row.id, text: snap.texte };
   }

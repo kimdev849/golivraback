@@ -14,6 +14,7 @@ const {
   listMyDeliveries,
   retryMyDeliveryDispatch,
 } = require('../controllers/logistics.controller');
+const { getCompanyActiveTracking } = require('../controllers/tracking.controller');
 const { authMiddleware } = require('../middlewares/auth.middleware');
 const { requireRoles } = require('../middlewares/role.middleware');
 const {
@@ -39,6 +40,7 @@ router.get('/operations', ...gestionnaireBase, getMyOperations);
 router.get('/retards', ...gestionnaireBase, getMyDelays);
 
 router.get('/livreurs', ...gestionnaireBase, listMyCouriers);
+router.get('/tracking/active', ...gestionnaireBase, getCompanyActiveTracking);
 router.get('/livreurs/:livreurId', ...gestionnaireBase, getMyCourier);
 router.get('/livraisons', ...gestionnaireBase, listMyDeliveries);
 router.post('/livreurs', ...gestionnaireActive, createMyCourier);

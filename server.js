@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
+const compression = require('compression');
 const rateLimit = require('express-rate-limit');
 
 const authRoutes = require('./routes/auth.routes');
@@ -93,6 +94,10 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
+// Compression gzip de toutes les réponses JSON : le feed de produits et les
+// listes de commandes sont textuels → payload souvent 3-5× plus léger, latence
+// et bande passante réduites (gain visible sur les réseaux mobiles du Congo).
+app.use(compression());
 // Limite généreuse : les images sont envoyées en base64 (un JPEG 8 Mo ≈ 11 Mo base64).
 app.use(express.json({ limit: '30mb' }));
 app.use(express.urlencoded({ limit: '30mb', extended: true }));
@@ -134,6 +139,18 @@ const otpLimiter = rateLimit({
   message: { message: 'Trop de demandes OTP, réessayez plus tard.', code: 'RATE_LIMIT_OTP' },
 });
 
+// Anti brute force connexion : 30 tentatives / 15 min par IP (configurable
+// via RATE_LIMIT_LOGIN_MAX). Complète le limiteur OTP — l'authentification
+// (client + staff) ne doit pas être testable à l'infini.
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: isDev ? 0 : (Number(process.env.RATE_LIMIT_LOGIN_MAX) || 30),
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => isDev,
+  message: { message: 'Trop de tentatives de connexion, réessayez plus tard.', code: 'RATE_LIMIT_LOGIN' },
+});
+
 // N'appliquer le limiter global qu'en production
 if (!isDev) {
   app.use(generalLimiter);
@@ -142,6 +159,10 @@ if (!isDev) {
 }
 
 app.use('/api/otp', otpLimiter, otpRoutes);
+// Rate limiting dédié sur la connexion (client + back-office) :
+// 30 tentatives / 15 min par IP, indépendant du limiteur général.
+app.use('/api/auth/login', loginLimiter);
+app.use('/api/auth/staff/login', loginLimiter);
 app.use('/api/auth', authRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/delivery', deliveryRoutes);

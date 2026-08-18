@@ -104,6 +104,12 @@ async function ensureLivraisonOnSousCommandeReady(db, sousCommandeId) {
     };
   }
 
+  // Coordonnées GPS (best-effort) : servent au suivi de la distance du livreur.
+  // Jamais géocodées — reprises telles quelles des snapshots (adresse client /
+  // commerce) quand le client ou le commerce en a déjà enregistrées.
+  const livraisonCoords = snapshotCoords(livraison?.latitude, livraison?.longitude);
+  const collecteCoords = snapshotCoords(collecte?.latitude, collecte?.longitude);
+
   const { data: created, error: insErr } = await db
     .from('livraisons')
     .insert({
@@ -114,10 +120,10 @@ async function ensureLivraisonOnSousCommandeReady(db, sousCommandeId) {
       adresse_livraison_snapshot: livraison,
       montant_livreur: 0,
       commission_logistique: deliverySplit.logistics,
-      latitude_collecte: null,
-      longitude_collecte: null,
-      latitude_livraison: null,
-      longitude_livraison: null,
+      latitude_collecte: collecteCoords.latitude,
+      longitude_collecte: collecteCoords.longitude,
+      latitude_livraison: livraisonCoords.latitude,
+      longitude_livraison: livraisonCoords.longitude,
       livreur_id: null,
       entreprise_logistique_id: null,
     })
@@ -136,16 +142,26 @@ async function ensureLivraisonOnSousCommandeReady(db, sousCommandeId) {
   return created;
 }
 
+function snapshotCoords(lat, lng) {
+  const a = Number(lat);
+  const b = Number(lng);
+  if (Number.isFinite(a) && Number.isFinite(b) && Math.abs(a) <= 90 && Math.abs(b) <= 180) {
+    return { latitude: Number(a.toFixed(8)), longitude: Number(b.toFixed(8)) };
+  }
+  return { latitude: null, longitude: null };
+}
+
 async function buildAddressSnapshots(db, sc, commande) {
   let collecte = null;
   if (sc.restaurant_id) {
     const { data: r } = await db
       .from('restaurants')
-      .select('nom, adresse_ligne1, adresse_quartier, adresse_ville')
+      .select('nom, adresse_ligne1, adresse_quartier, adresse_ville, latitude, longitude')
       .eq('id', sc.restaurant_id)
       .maybeSingle();
     if (r) {
       const texte = [r.nom, r.adresse_quartier, r.adresse_ligne1, r.adresse_ville].filter(Boolean).join(' · ');
+      const coords = snapshotCoords(r.latitude, r.longitude);
       collecte = {
         version: 2,
         texte,
@@ -153,17 +169,20 @@ async function buildAddressSnapshots(db, sc, commande) {
         ligne1: r.adresse_ligne1 || null,
         ville: r.adresse_ville || 'Brazzaville',
         pays: 'Congo',
+        latitude: coords.latitude,
+        longitude: coords.longitude,
       };
     }
   }
   if (sc.boutique_id) {
     const { data: b } = await db
       .from('boutiques')
-      .select('nom, adresse_ligne1, adresse_quartier, adresse_ville')
+      .select('nom, adresse_ligne1, adresse_quartier, adresse_ville, latitude, longitude')
       .eq('id', sc.boutique_id)
       .maybeSingle();
     if (b) {
       const texte = [b.nom, b.adresse_quartier, b.adresse_ligne1, b.adresse_ville].filter(Boolean).join(' · ');
+      const coords = snapshotCoords(b.latitude, b.longitude);
       collecte = {
         version: 2,
         texte,
@@ -171,6 +190,8 @@ async function buildAddressSnapshots(db, sc, commande) {
         ligne1: b.adresse_ligne1 || null,
         ville: b.adresse_ville || 'Brazzaville',
         pays: 'Congo',
+        latitude: coords.latitude,
+        longitude: coords.longitude,
       };
     }
   }

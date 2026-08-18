@@ -971,6 +971,22 @@ async function deleteAccount(req, res, next) {
   }
 }
 
+/**
+ * Export RGPD — portabilité des données personnelles (art. 20 RGPD).
+ * Renvoie un JSON complet des données de l'utilisateur authentifié,
+ * sans aucun secret (jamais le hash du mot de passe, les tokens ou l'IP).
+ */
+async function exportMyData(req, res, next) {
+  try {
+    const db = getDb();
+    const { exportUserData } = require('../services/data-export.service');
+    const data = await exportUserData(db, req.auth.userId);
+    return res.json(data);
+  } catch (error) {
+    return next(error);
+  }
+}
+
 async function changePassword(req, res, next) {
   try {
     const { currentPassword, newPassword } = req.body;
@@ -1023,6 +1039,7 @@ module.exports = {
   changePassword,
   resetPassword,
   deleteAccount,
+  exportMyData,
   getMyPreferences,
   patchMyPreferences,
 };

@@ -11,6 +11,44 @@ function extFromContentType(contentType) {
   return null;
 }
 
+/**
+ * Vérifie les MAGIC BYTES du buffer contre le contentType déclaré dans le
+ * data URL. Le client peut déclarer n'importe quel contentType — seul le
+ * contenu réel du fichier fait foi (anti-extension falsifiée / polyglotte).
+ */
+function imageMagicMatches(buffer, contentType) {
+  if (!buffer || buffer.length < 12) return false;
+  if (contentType === 'image/jpeg') {
+    return buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+  }
+  if (contentType === 'image/png') {
+    return (
+      buffer[0] === 0x89 &&
+      buffer[1] === 0x50 &&
+      buffer[2] === 0x4e &&
+      buffer[3] === 0x47 &&
+      buffer[4] === 0x0d &&
+      buffer[5] === 0x0a &&
+      buffer[6] === 0x1a &&
+      buffer[7] === 0x0a
+    );
+  }
+  if (contentType === 'image/webp') {
+    // RIFF....WEBP
+    return (
+      buffer[0] === 0x52 &&
+      buffer[1] === 0x49 &&
+      buffer[2] === 0x46 &&
+      buffer[3] === 0x46 &&
+      buffer[8] === 0x57 &&
+      buffer[9] === 0x45 &&
+      buffer[10] === 0x42 &&
+      buffer[11] === 0x50
+    );
+  }
+  return false;
+}
+
 function storageErrorMessage(error) {
   const msg = String(error?.message || error || 'Erreur storage');
   if (msg.toLowerCase().includes('bucket') || msg.toLowerCase().includes('not found')) {
@@ -40,6 +78,11 @@ async function uploadBase64Image(req, res, next) {
     }
     if (buffer.length > 8_000_000) {
       throw createHttpError(413, 'Image trop lourde (max 8MB). Réduisez la résolution ou convertissez en JPEG.');
+    }
+    // Le contentType du data URL est déclaré par le client : on vérifie que le
+    // contenu réel du fichier correspond (magic bytes).
+    if (!imageMagicMatches(buffer, contentType)) {
+      throw createHttpError(400, "Format d'image invalide : le contenu ne correspond pas au type déclaré (jpeg, png, webp).");
     }
 
     const bucket = process.env.SUPABASE_STORAGE_BUCKET || 'public';
