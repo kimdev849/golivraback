@@ -16,6 +16,13 @@ function deliveryAddressFromSnapshot(snap) {
   return '';
 }
 
+/** Sélection de base (toujours disponible). */
+const BASE_COLUMNS_LIVREURS = 'id, type_vehicule, est_disponible, est_approuve, note_moyenne, nb_livraisons_reussies, utilisateur_id, entreprise_logistique_id';
+/** Colonnes GPS (disponibles après migration SQL amendments-gps-tracking.sql). */
+const GPS_COLUMNS_LIVREURS = ', latitude_actuelle, longitude_actuelle, derniere_position_at';
+const BASE_COLUMNS_LIVRAISONS = '*';
+const GPS_COLUMNS_LIVRAISONS = 'latitude_collecte, longitude_collecte, latitude_livraison, longitude_livraison';
+
 /**
  * Vue temps réel des livreurs (position partagée UNIQUEMENT pendant une course) :
  *   - admin → toutes les entreprises logistiques ;
@@ -23,18 +30,38 @@ function deliveryAddressFromSnapshot(snap) {
  *
  * Retourne pour chaque livreur son statut opérationnel, sa position courante
  * (si récente), sa course en cours et la distance restante jusqu'à l'adresse.
+ *
+ * Résilient : si les colonnes GPS n'existent pas encore dans la base,
+ * la fonction fonctionne sans positions (fallback gracieux).
  */
 async function getActiveCouriersTracking(db, { companyId } = {}) {
-  let livreursQuery = db
-    .from('livreurs')
-    .select(
-      'id, type_vehicule, est_disponible, est_approuve, note_moyenne, nb_livraisons_reussies, utilisateur_id, entreprise_logistique_id, latitude_actuelle, longitude_actuelle, derniere_position_at',
-    )
-    .order('created_at', { ascending: false });
-  if (companyId) livreursQuery = livreursQuery.eq('entreprise_logistique_id', companyId);
+  // ── 1. Livreurs (GPS optionnel) ──────────────────────────────────────────
+  let livreurs;
+  let hasGpsColumns = false;
 
-  const { data: livreurs, error: lErr } = await livreursQuery;
-  if (lErr) throw lErr;
+  // Tentative avec colonnes GPS
+  try {
+    let q = db
+      .from('livreurs')
+      .select(`${BASE_COLUMNS_LIVREURS}${GPS_COLUMNS_LIVREURS}`)
+      .order('created_at', { ascending: false });
+    if (companyId) q = q.eq('entreprise_logistique_id', companyId);
+    const { data, error } = await q;
+    if (error) throw error;
+    livreurs = data;
+    hasGpsColumns = true;
+  } catch {
+    // Colonnes GPS absentes → fallback sur base
+    let q = db
+      .from('livreurs')
+      .select(BASE_COLUMNS_LIVREURS)
+      .order('created_at', { ascending: false });
+    if (companyId) q = q.eq('entreprise_logistique_id', companyId);
+    const { data, error } = await q;
+    if (error) throw error;
+    livreurs = data;
+    hasGpsColumns = false;
+  }
 
   const userIds = [...new Set((livreurs || []).map((l) => l.utilisateur_id).filter(Boolean))];
   const { data: users } = userIds.length
@@ -47,12 +74,27 @@ async function getActiveCouriersTracking(db, { companyId } = {}) {
     : await db.from('entreprises_logistiques').select('id, nom');
   const companyMap = new Map((companies || []).map((c) => [c.id, c]));
 
-  // Courses en cours (attribuée → en route) — une seule par livreur actif.
-  const { data: activeDeliveries, error: dErr } = await db
-    .from('livraisons')
-    .select('*')
-    .in('statut', [...ACTIVE_COURSE_STATUTS]);
-  if (dErr) throw dErr;
+  // ── 2. Courses en cours (GPS optionnel) ───────────────────────────────────
+  let activeDeliveries;
+  let deliveriesHaveGps = false;
+
+  try {
+    const { data, error } = await db
+      .from('livraisons')
+      .select(`${BASE_COLUMNS_LIVRAISONS}, ${GPS_COLUMNS_LIVRAISONS}`)
+      .in('statut', [...ACTIVE_COURSE_STATUTS]);
+    if (error) throw error;
+    activeDeliveries = data;
+    deliveriesHaveGps = true;
+  } catch {
+    const { data, error } = await db
+      .from('livraisons')
+      .select(BASE_COLUMNS_LIVRAISONS)
+      .in('statut', [...ACTIVE_COURSE_STATUTS]);
+    if (error) throw error;
+    activeDeliveries = data;
+    deliveriesHaveGps = false;
+  }
 
   // Référence lisible de la course (numéro de commande) via sous-commandes.
   const scIds = [...new Set((activeDeliveries || []).map((l) => l.sous_commande_id).filter(Boolean))];
@@ -71,23 +113,27 @@ async function getActiveCouriersTracking(db, { companyId } = {}) {
     if (!liv.livreur_id) continue;
     const commandeId = commandeIdBySc.get(liv.sous_commande_id);
     const reference = numeroByCommande.get(commandeId) || liv.id.slice(0, 8).toUpperCase();
-    deliveryByCourier.set(liv.livreur_id, {
+
+    const course = {
       id: liv.id,
       reference,
       statut: liv.statut,
       adresse_retrait: deliveryAddressFromSnapshot(liv.adresse_collecte_snapshot),
       adresse_livraison: deliveryAddressFromSnapshot(liv.adresse_livraison_snapshot),
-      // Point de retrait (commerce) et destination : permettent de dessiner le
-      // trajet prévu de la course sur la carte.
-      retrait:
-        liv.latitude_collecte != null && liv.longitude_collecte != null
-          ? { latitude: Number(liv.latitude_collecte), longitude: Number(liv.longitude_collecte) }
-          : null,
-      destination:
-        liv.latitude_livraison != null && liv.longitude_livraison != null
-          ? { latitude: Number(liv.latitude_livraison), longitude: Number(liv.longitude_livraison) }
-          : null,
-    });
+      retrait: null,
+      destination: null,
+    };
+
+    if (deliveriesHaveGps) {
+      if (liv.latitude_collecte != null && liv.longitude_collecte != null) {
+        course.retrait = { latitude: Number(liv.latitude_collecte), longitude: Number(liv.longitude_collecte) };
+      }
+      if (liv.latitude_livraison != null && liv.longitude_livraison != null) {
+        course.destination = { latitude: Number(liv.latitude_livraison), longitude: Number(liv.longitude_livraison) };
+      }
+    }
+
+    deliveryByCourier.set(liv.livreur_id, course);
   }
 
   const now = Date.now();
@@ -98,14 +144,11 @@ async function getActiveCouriersTracking(db, { companyId } = {}) {
     const compteActif = user?.est_actif !== false;
     const course = deliveryByCourier.get(l.id) || null;
 
-    // Position : uniquement si récente (≤ 15 min).
+    // Position : uniquement si récente (≤ 15 min) et colonnes GPS disponibles.
     let position = null;
     let position_age_min = null;
-    if (
-      l.latitude_actuelle != null &&
-      l.longitude_actuelle != null &&
-      l.derniere_position_at
-    ) {
+
+    if (hasGpsColumns && l.latitude_actuelle != null && l.longitude_actuelle != null && l.derniere_position_at) {
       const age = now - new Date(l.derniere_position_at).getTime();
       if (Number.isFinite(age) && age >= 0 && age <= POSITION_MAX_AGE_MS) {
         position = {
@@ -143,7 +186,7 @@ async function getActiveCouriersTracking(db, { companyId } = {}) {
       nb_livraisons_reussies: Number(l.nb_livraisons_reussies || 0),
       entreprise_id: l.entreprise_logistique_id || null,
       entreprise_nom: companyId ? null : companyMap.get(l.entreprise_logistique_id)?.nom || null,
-      compte_actif,
+      compte_actif: compteActif,
       statut,
       position,
       position_age_min,
@@ -161,7 +204,6 @@ async function getActiveCouriersTracking(db, { companyId } = {}) {
   };
 
   // ── Stats live : livraisons terminées aujourd'hui, délai moyen, taux ──
-  // Utile au gestionnaire et à l'admin pour un aperçu rapide.
   const courierIds = couriers.map((c) => c.id);
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);

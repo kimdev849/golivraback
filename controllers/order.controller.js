@@ -562,11 +562,22 @@ async function getOrderDetails(req, res, next) {
     let livreur = null;
     let distanceKm = null;
     if (primaryLivraison?.livreur_id) {
-      const { data: lr } = await db
-        .from('livreurs')
-        .select('id, note_moyenne, utilisateur_id, latitude_actuelle, longitude_actuelle, derniere_position_at')
-        .eq('id', primaryLivraison.livreur_id)
-        .maybeSingle();
+      let lr = null;
+      try {
+        const r = await db
+          .from('livreurs')
+          .select('id, note_moyenne, utilisateur_id, latitude_actuelle, longitude_actuelle, derniere_position_at')
+          .eq('id', primaryLivraison.livreur_id)
+          .maybeSingle();
+        lr = r.data;
+      } catch {
+        const r = await db
+          .from('livreurs')
+          .select('id, note_moyenne, utilisateur_id')
+          .eq('id', primaryLivraison.livreur_id)
+          .maybeSingle();
+        lr = r.data;
+      }
       let utilisateur = null;
       if (lr?.utilisateur_id) {
         const { data: u } = await db
