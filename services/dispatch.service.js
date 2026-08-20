@@ -346,10 +346,16 @@ async function acceptOpenDelivery(db, livraisonId, livreurId) {
     await cancelDuplicateOpenLivraisons(db, data.sous_commande_id, data.id).catch(() => {});
   }
 
-  const { notifyDeliveryAccepted } = require('./order-notify.service');
-  await notifyDeliveryAccepted(db, livraisonId).catch((err) => {
-    console.warn('[notify] delivery accepted', livraisonId, err?.message || err);
-  });
+  const { notifyDeliveryAccepted, notifyExternalDeliveryAccepted } = require('./order-notify.service');
+  if (data.sous_commande_id) {
+    await notifyDeliveryAccepted(db, livraisonId).catch((err) => {
+      console.warn('[notify] delivery accepted', livraisonId, err?.message || err);
+    });
+  } else {
+    await notifyExternalDeliveryAccepted(db, livraisonId).catch((err) => {
+      console.warn('[notify] ext delivery accepted', livraisonId, err?.message || err);
+    });
+  }
 
   return data;
 }
@@ -407,10 +413,16 @@ async function advanceCourierDeliveryStep(db, livraisonId, livreurId) {
     }
   }
 
-  const { notifyDeliveryStep } = require('./order-notify.service');
-  await notifyDeliveryStep(db, livraisonId, next).catch((err) => {
-    console.warn('[notify] delivery step', next, err?.message || err);
-  });
+  const { notifyDeliveryStep, notifyExternalDeliveryStep } = require('./order-notify.service');
+  if (liv.sous_commande_id) {
+    await notifyDeliveryStep(db, livraisonId, next).catch((err) => {
+      console.warn('[notify] delivery step', next, err?.message || err);
+    });
+  } else {
+    await notifyExternalDeliveryStep(db, livraisonId, next).catch((err) => {
+      console.warn('[notify] ext delivery step', next, err?.message || err);
+    });
+  }
 
   return updated;
 }
@@ -522,10 +534,16 @@ async function completeLivraisonAndSync(db, livraisonId, livreurId, proof) {
     console.error('[wallet] settleDeliveryFeesOnComplete', livraisonId, err?.message || err);
   });
 
-  const { notifyDeliveryCompleted } = require('./order-notify.service');
-  await notifyDeliveryCompleted(db, livraisonId).catch((err) => {
-    console.warn('[notify] delivery completed', livraisonId, err?.message || err);
-  });
+  const { notifyDeliveryCompleted, notifyExternalDeliveryCompleted } = require('./order-notify.service');
+  if (data.sous_commande_id) {
+    await notifyDeliveryCompleted(db, livraisonId).catch((err) => {
+      console.warn('[notify] delivery completed', livraisonId, err?.message || err);
+    });
+  } else {
+    await notifyExternalDeliveryCompleted(db, livraisonId).catch((err) => {
+      console.warn('[notify] ext delivery completed', livraisonId, err?.message || err);
+    });
+  }
 
   return data;
 }

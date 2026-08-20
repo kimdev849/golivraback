@@ -480,6 +480,123 @@ async function notifyDeliveryCompleted(db, livraisonId) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Livraisons externes (commerce → client)
+//
+// Les livraisons externes n'ont PAS de sous_commande_id, donc getLivraisonParties()
+// retourne parties=null. Ces fonctions résolvent le propriétaire du commerce
+// directement depuis restaurant_id / boutique_id sur la table livraisons.
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function getExternalDeliveryVendorInfo(db, livraisonId) {
+  const { data: liv, error } = await db
+    .from('livraisons')
+    .select('id, statut, restaurant_id, boutique_id, client_nom, livreur_id, sous_commande_id')
+    .eq('id', livraisonId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!liv) return null;
+
+  // Ce n'est PAS une livraison externe → utiliser le parcours classique.
+  if (liv.sous_commande_id) return null;
+
+  let vendorOwnerIds = [];
+  let commerceNom = 'Le commerce';
+  const table = liv.restaurant_id ? 'restaurants' : liv.boutique_id ? 'boutiques' : null;
+  const id = liv.restaurant_id || liv.boutique_id;
+
+  if (table && id) {
+    const { data: est } = await db.from(table).select('proprietaire_id, nom').eq('id', id).maybeSingle();
+    if (est?.proprietaire_id) vendorOwnerIds = [est.proprietaire_id];
+    if (est?.nom) commerceNom = est.nom;
+  }
+
+  let courierUserId = null;
+  if (liv.livreur_id) {
+    const { data: courier } = await db
+      .from('livreurs')
+      .select('utilisateur_id')
+      .eq('id', liv.livreur_id)
+      .maybeSingle();
+    courierUserId = courier?.utilisateur_id ?? null;
+  }
+
+  return { liv, vendorOwnerIds, commerceNom, courierUserId };
+}
+
+async function notifyExternalDeliveryAccepted(db, livraisonId) {
+  const info = await getExternalDeliveryVendorInfo(db, livraisonId);
+  if (!info) return;
+
+  const base = { livraison_id: livraisonId };
+
+  await notifyVendors(db, info.vendorOwnerIds, {
+    type: 'livraison_externe',
+    titre: 'Livreur assigné 🚴',
+    corps: `Un livreur a accepté la livraison pour ${info.liv.client_nom || 'votre client'}.`,
+    data: { ...base, action: 'vendor_delivery' },
+  });
+
+  if (info.courierUserId) {
+    await notifyUserSafe(db, {
+      utilisateurId: info.courierUserId,
+      type: 'livraison_statut',
+      titre: 'Nouvelle mission',
+      corps: `Livraison externe pour ${info.liv.client_nom || 'un client'}. Récupérez le colis chez ${info.commerceNom}.`,
+      data: { livraison_id: livraisonId, action: 'courier_missions' },
+    });
+  }
+}
+
+async function notifyExternalDeliveryStep(db, livraisonId, step) {
+  const info = await getExternalDeliveryVendorInfo(db, livraisonId);
+  if (!info) return;
+
+  const base = { livraison_id: livraisonId };
+
+  if (step === 'en_collecte') {
+    await notifyVendors(db, info.vendorOwnerIds, {
+      type: 'livraison_externe',
+      titre: 'Livreur en route vers vous',
+      corps: 'Le livreur se rend au point de retrait pour récupérer le colis.',
+      data: { ...base, action: 'vendor_delivery' },
+    });
+  }
+
+  if (step === 'en_route') {
+    await notifyVendors(db, info.vendorOwnerIds, {
+      type: 'livraison_externe',
+      titre: 'Colis en route 📦',
+      corps: `Le colis pour ${info.liv.client_nom || 'votre client'} est en route.`,
+      data: { ...base, action: 'vendor_delivery' },
+    });
+  }
+}
+
+async function notifyExternalDeliveryCompleted(db, livraisonId) {
+  const info = await getExternalDeliveryVendorInfo(db, livraisonId);
+  if (!info) return;
+
+  const base = { livraison_id: livraisonId };
+
+  await notifyVendors(db, info.vendorOwnerIds, {
+    type: 'livraison_externe',
+    titre: 'Livraison terminée ✅',
+    corps: `Le colis pour ${info.liv.client_nom || 'votre client'} a bien été livré.`,
+    data: { ...base, action: 'vendor_delivery' },
+  });
+
+  if (info.courierUserId) {
+    await notifyUserSafe(db, {
+      utilisateurId: info.courierUserId,
+      type: 'livraison_statut',
+      titre: 'Course terminée',
+      corps: 'Bonne livraison ! Consultez vos missions.',
+      data: { livraison_id: livraisonId, action: 'courier_missions' },
+    });
+  }
+}
+
 module.exports = {
   getSousCommandeParties,
   getLivraisonParties,
@@ -495,4 +612,7 @@ module.exports = {
   notifyDeliveryStep,
   notifyDeliveryCompleted,
   notifyAvailableCouriersForDelivery,
+  notifyExternalDeliveryAccepted,
+  notifyExternalDeliveryStep,
+  notifyExternalDeliveryCompleted,
 };

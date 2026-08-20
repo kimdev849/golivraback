@@ -261,7 +261,7 @@ async function getDeliveryDetails(req, res, next) {
       if (sc?.restaurant_id) {
         const { data: r } = await db
           .from('restaurants')
-          .select('id, nom, telephone, adresse_ligne1, image_url')
+          .select('id, nom, telephone, adresse_ligne1, image_url, proprietaire_id')
           .eq('id', sc.restaurant_id)
           .maybeSingle();
         commerce = r ? { ...r, type: 'restaurant' } : null;
@@ -269,7 +269,7 @@ async function getDeliveryDetails(req, res, next) {
       if (sc?.boutique_id) {
         const { data: b } = await db
           .from('boutiques')
-          .select('id, nom, telephone, adresse_ligne1, image_url')
+          .select('id, nom, telephone, adresse_ligne1, image_url, proprietaire_id')
           .eq('id', sc.boutique_id)
           .maybeSingle();
         commerce = b ? { ...b, type: 'boutique' } : null;
@@ -278,7 +278,7 @@ async function getDeliveryDetails(req, res, next) {
       if (livraison.restaurant_id) {
         const { data: r } = await db
           .from('restaurants')
-          .select('id, nom, telephone, adresse_ligne1, image_url')
+          .select('id, nom, telephone, adresse_ligne1, image_url, proprietaire_id')
           .eq('id', livraison.restaurant_id)
           .maybeSingle();
         commerce = r ? { ...r, type: 'restaurant' } : null;
@@ -286,7 +286,7 @@ async function getDeliveryDetails(req, res, next) {
       if (livraison.boutique_id) {
         const { data: b } = await db
           .from('boutiques')
-          .select('id, nom, telephone, adresse_ligne1, image_url')
+          .select('id, nom, telephone, adresse_ligne1, image_url, proprietaire_id')
           .eq('id', livraison.boutique_id)
           .maybeSingle();
         commerce = b ? { ...b, type: 'boutique' } : null;

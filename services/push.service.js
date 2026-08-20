@@ -89,7 +89,27 @@ async function getTokensForUsers(db, userIds) {
  * Envoie un message push à l'API Expo.
  * @param {Array<{to: string, title: string, body: string, data?: object, sound?: string, badge?: number}>} messages
  */
-async function sendToExpoApi(messages) {
+/** Tokens Expo jugés invalides par l'API — on les supprime de la DB. */
+const INVALID_TOKEN_MESSAGES = new Set([
+  'DeviceNotRegistered',
+  'InvalidCredentials',
+]);
+
+/**
+ * Supprime un token push de la DB (appelé quand Expo le déclare invalide).
+ * Ne lève jamais d'erreur.
+ */
+async function removeInvalidToken(db, token) {
+  try {
+    const { error } = await db.from('push_tokens').delete().eq('token', token);
+    if (error) console.warn('[push] impossible de supprimer le token invalide:', error.message);
+    else console.log('[push] Token invalide supprimé de la DB:', token.slice(0, 30));
+  } catch (err) {
+    console.warn('[push] removeInvalidToken error:', err?.message || err);
+  }
+}
+
+async function sendToExpoApi(messages, db) {
   if (!messages.length) return;
 
   const headers = {
@@ -118,14 +138,20 @@ async function sendToExpoApi(messages) {
 
     const result = await res.json();
 
-    // Log des erreurs de ticket
+    // Log des erreurs de ticket + nettoyage des tokens invalides
     if (result?.data && Array.isArray(result.data)) {
-      result.data.forEach((ticket, i) => {
+      for (let i = 0; i < result.data.length; i++) {
+        const ticket = result.data[i];
         if (ticket.status === 'error') {
           const token = messages[i]?.to ?? 'unknown';
-          console.warn(`[push] Ticket erreur pour token ${token}:`, ticket.message, ticket.details);
+          console.warn(`[push] Ticket erreur pour token ${token.slice(0, 30)}:`, ticket.message);
+          // Token device désenregistré ou credentials expirés → supprimer de la DB
+          // pour éviter de re-télécharger inutilement à chaque push.
+          if (db && INVALID_TOKEN_MESSAGES.has(ticket.message) && token) {
+            void removeInvalidToken(db, token);
+          }
         }
-      });
+      }
     }
   } catch (err) {
     console.error('[push] Erreur réseau Expo API:', err?.message || err);
@@ -164,7 +190,7 @@ async function sendPushToUser(db, userId, payload) {
   try {
     const tokens = await getTokensForUser(db, userId);
     const messages = buildMessages(tokens, payload);
-    if (messages.length) await sendToExpoApi(messages);
+    if (messages.length) await sendToExpoApi(messages, db);
   } catch (err) {
     console.warn('[push] sendPushToUser failed:', err?.message || err);
   }
@@ -183,7 +209,7 @@ async function sendPushToUsers(db, userIds, payload) {
   try {
     const tokenRows = await getTokensForUsers(db, userIds);
     const messages = buildMessages(tokenRows, payload);
-    if (messages.length) await sendToExpoApi(messages);
+    if (messages.length) await sendToExpoApi(messages, db);
   } catch (err) {
     console.warn('[push] sendPushToUsers failed:', err?.message || err);
   }
