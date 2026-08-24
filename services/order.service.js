@@ -250,7 +250,8 @@ async function buildLinesForSegment(db, kind, entrepriseId, articles) {
  * Une commande parente + une sous-commande par commerce (panier multi-segments).
  */
 async function createOrderFromPayload(db, clientId, payload) {
-  const { methodePaiement, noteClient, segments, entrepriseId, establishmentType, articles, codePromo } =
+  const { methodePaiement, noteClient, segments, entrepriseId, establishmentType, articles, codePromo,
+    clientTotal, clientSubtotal, clientDeliveryFee } =
     payload;
 
   const { snap: addrSnap, id: adresseLivraisonId } = await resolveDeliveryAddress(db, clientId, payload);
@@ -316,7 +317,11 @@ async function createOrderFromPayload(db, clientId, payload) {
     const { lines, sousTotal } = await buildLinesForSegment(db, kind, eid, segArticles);
     let frais = 0;
     if (mode === 'golivra') {
-      if (zonePricingMeta?.price_fcfa != null) {
+      // Si le client a envoyé un frais de livraison calculé, l'utiliser
+      // pour garantir la cohérence panier → suivi → paiement (C1).
+      if (typeof clientDeliveryFee === 'number' && clientDeliveryFee >= 0 && Number.isFinite(clientDeliveryFee)) {
+        frais = Math.round(clientDeliveryFee);
+      } else if (zonePricingMeta?.price_fcfa != null) {
         frais = Math.round(Number(zonePricingMeta.price_fcfa));
       } else {
         frais = await resolveDeliveryFeeForEstablishment(db, ent);
