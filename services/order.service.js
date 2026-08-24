@@ -317,9 +317,14 @@ async function createOrderFromPayload(db, clientId, payload) {
     const { lines, sousTotal } = await buildLinesForSegment(db, kind, eid, segArticles);
     let frais = 0;
     if (mode === 'golivra') {
-      // Si le client a envoyé un frais de livraison calculé, l'utiliser
-      // pour garantir la cohérence panier → suivi → paiement (C1).
-      if (typeof clientDeliveryFee === 'number' && clientDeliveryFee >= 0 && Number.isFinite(clientDeliveryFee)) {
+      // Priorité : frais par segment (cohérence panier → suivi → paiement).
+      // Fallback : frais total global → zone pricing → tarif établissement.
+      const segFee = typeof seg.deliveryFee === 'number' && seg.deliveryFee >= 0 && Number.isFinite(seg.deliveryFee)
+        ? Math.round(seg.deliveryFee)
+        : null;
+      if (segFee != null) {
+        frais = segFee;
+      } else if (typeof clientDeliveryFee === 'number' && clientDeliveryFee >= 0 && Number.isFinite(clientDeliveryFee)) {
         frais = Math.round(clientDeliveryFee);
       } else if (zonePricingMeta?.price_fcfa != null) {
         frais = Math.round(Number(zonePricingMeta.price_fcfa));
