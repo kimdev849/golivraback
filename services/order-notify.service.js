@@ -158,8 +158,8 @@ async function notifyPaymentConfirmed(db, commandeId, clientId) {
   }
   await notifyVendors(db, [...ownerIds], {
     type: 'commande_nouvelle',
-    titre: 'Nouvelle commande payée',
-    corps: 'Un client vient de payer. Consultez vos commandes.',
+    titre: 'Nouvelle commande',
+    corps: 'Un client vient de passer une commande. Consultez vos commandes.',
     data: { commande_id: commandeId, action: 'vendor_orders' },
   });
 }
