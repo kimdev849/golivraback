@@ -609,6 +609,10 @@ async function putEnterpriseHoraires(req, res, next) {
 
     const { getEtablissementOuvertureInfo } = require('../services/horaires.service');
     const info = await getEtablissementOuvertureInfo(db, { kind, id });
+    // Mettre à jour est_ouvert sur l'enterprise pour que le client reflète
+    // immédiatement le nouveau statut (bug Run 4 #6).
+    const table = kind === 'boutique' ? 'boutiques' : 'restaurants';
+    await db.from(table).update({ est_ouvert: info.ouvert }).eq('id', id);
     return res.json({ enterprise_id: id, type: kind, horaires: inserted, ...info });
   } catch (error) {
     return next(error);
