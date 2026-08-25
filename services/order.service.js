@@ -301,9 +301,11 @@ async function createOrderFromPayload(db, clientId, payload) {
     if (ent.statut !== 'active') {
       throw createHttpError(403, `${ent.nom || 'Commerce'} : validation en cours.`);
     }
-    if (ent.est_ouvert !== true) {
-      throw createHttpError(403, `${ent.nom || 'Commerce'} : temporairement fermé.`);
-    }
+    // NOTE: on ne vérifie PLUS ent.est_ouvert ici car c'est un snapshot
+    // calculé au moment de la sauvegarde des horaires. Si le commerce a
+    // sauvegardé ses horaires à 8h (fermé), est_ouvert=false même à 10h.
+    // La source de vérité est assertEtablissementOuvert ci-dessous qui
+    // vérifie les vrais horaires en live avec nowInBrazzaville().
 
     // Horaires d'ouverture (strict) + délai de préparation : la commande n'est
     // possible que si le commerce est ouvert ET que la préparation peut se
@@ -602,10 +604,14 @@ async function updateSousCommandeStatut(db, sousCommandeId, statut, extra = {}) 
   if (scErr) throw scErr;
   if (!sc) throw createHttpError(404, 'Commande introuvable');
 
-  // Nouveau parcours : l'ACCEPTATION ne requiert plus de paiement (le client
-  // paie APRÈS acceptation). Seuls la préparation et l'état prêt exigent un
-  // paiement validé — « la commande n'est réellement confirmée qu'à paiement ».
-  if (statut === 'en_preparation' || statut === 'prete') {
+  // Nouveau parcours « paiement après acceptation » :
+  //  - L'acceptation ET la préparation ne requièrent PAS de paiement validé.
+  //    Le restaurant peut accepter et préparer la commande pendant que le
+  //    client reçoit la demande de paiement Mobile Money.
+  //  - La transition vers « prete » (prête pour livraison) exige le paiement
+  //    validé : on ne confie pas une commande à un livreur tant que le client
+  //    n'a pas payé.
+  if (statut === 'prete') {
     const { assertCommandePayee } = require('./payment.service');
     await assertCommandePayee(db, sc.commande_id);
   }
