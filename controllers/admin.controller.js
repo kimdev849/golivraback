@@ -547,6 +547,22 @@ async function rejectUser(req, res, next) {
 
     const { data: roleRow } = await db.from('roles').select('nom').eq('id', user.role_id).maybeSingle();
 
+    // Cascade : rejeter aussi le(s) commerce(s) associé(s) à cet utilisateur.
+    // Sans ça, le restaurant/boutique reste « en_attente » dans la liste
+    // marchands et le compte rejeté réapparaît.
+    const roleNom = roleRow?.nom;
+    if (roleNom === 'restaurateur' || roleNom === 'commercant') {
+      const table = roleNom === 'restaurateur' ? 'restaurants' : 'boutiques';
+      await db
+        .from(table)
+        .update({
+          statut: 'rejetee',
+          statut_moderation: 'rejetee',
+          raison_rejet: typeof raison === 'string' && raison.trim() ? raison.trim() : null,
+        })
+        .eq('proprietaire_id', userId);
+    }
+
     return res.json({
       ...user,
       role: roleRow?.nom ?? null,
