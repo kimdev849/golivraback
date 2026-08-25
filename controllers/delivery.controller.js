@@ -339,7 +339,10 @@ async function getDeliveryDetails(req, res, next) {
         throw createHttpError(403, 'Accès non autorisé');
       }
     } else if (role === 'restaurateur' || role === 'commercant') {
-      const owns = commerce?.proprietaire_id === req.auth.userId;
+      // Le créateur de la livraison externe garde toujours accès au suivi,
+      // même si la résolution du commerce échoue.
+      const owns = commerce?.proprietaire_id === req.auth.userId
+        || livraison.createur_utilisateur_id === req.auth.userId;
       if (!owns) throw createHttpError(403, 'Accès non autorisé à cette livraison');
     } else if (role === 'livreur') {
       const myLivreurId = await getLivreurIdForUser(db, req.auth.userId);

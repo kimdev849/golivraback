@@ -20,10 +20,59 @@ const {
   getExternalDeliveryPaymentStatusHandler,
 } = require('../controllers/vendor-delivery.controller');
 
+const { getDb } = require('../config/db');
+
+/** Suivi public d'une livraison externe — pas d'auth requise. */
+async function publicTrackExternalDelivery(req, res, next) {
+  try {
+    const { deliveryId } = req.params;
+    const { telephone } = req.query; // ?telephone=+24206...
+    const db = getDb();
+
+    const { data: liv, error } = await db
+      .from('livraisons')
+      .select('id, statut, client_nom, client_telephone, created_at, livree_at, montant_total, restaurant_id, boutique_id')
+      .eq('id', deliveryId)
+      .eq('type_livraison', 'externe')
+      .maybeSingle();
+    if (error) throw error;
+    if (!liv) return res.status(404).json({ message: 'Livraison introuvable.' });
+
+    // Sécurité : seuls le créateur ou le destinataire (par téléphone) peuvent suivre.
+    if (telephone && liv.client_telephone && telephone.replace(/\s/g, '') !== liv.client_telephone.replace(/\s/g, '')) {
+      return res.status(403).json({ message: 'Accès non autorisé.' });
+    }
+
+    // Nom du commerce
+    let commerceNom = '';
+    if (liv.restaurant_id) {
+      const { data: r } = await db.from('restaurants').select('nom').eq('id', liv.restaurant_id).maybeSingle();
+      commerceNom = r?.nom || '';
+    } else if (liv.boutique_id) {
+      const { data: b } = await db.from('boutiques').select('nom').eq('id', liv.boutique_id).maybeSingle();
+      commerceNom = b?.nom || '';
+    }
+
+    return res.json({
+      id: liv.id,
+      statut: liv.statut,
+      client_nom: liv.client_nom,
+      commerce_nom: commerceNom,
+      montant_total: liv.montant_total,
+      created_at: liv.created_at,
+      livree_at: liv.livree_at,
+    });
+  } catch (err) {
+    return next(err);
+  }
+}
+
 const router = express.Router();
 
 router.get('/status/:orderId', authMiddleware, getDeliveryStatus);
 router.get('/tracking/active', authMiddleware, requireRoles(['admin']), getAdminActiveTracking);
+// Suivi public d'une livraison externe par téléphone du destinataire (pas d'auth requise).
+router.get('/track/:deliveryId', publicTrackExternalDelivery);
 router.get('/:deliveryId/details', authMiddleware, getDeliveryDetails);
 router.get(
   '/vendor/externe',

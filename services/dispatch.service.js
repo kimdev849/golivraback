@@ -272,7 +272,19 @@ async function listOpenDeliveries(db) {
     .eq('statut', 'en_attente')
     .order('created_at', { ascending: true });
   if (error) throw error;
-  const deduped = dedupeOpenDeliveries(livraisons || []);
+  // Filtrer les livraisons externes dont le paiement n'est pas confirmé.
+  // Le paiement est stocké dans le snapshot d'adresse livraison sous
+  // paiement_statut. Sans ce garde-fou, une livraison externe apparaît
+  // pour les livreurs AVANT que le commerce ait payé.
+  const paidUp = (livraisons || []).filter((l) => {
+    if (l.type_livraison !== 'externe') return true;
+    const snap = l.adresse_livraison_snapshot;
+    if (snap && typeof snap === 'object' && snap.paiement_statut) {
+      return snap.paiement_statut === 'valide';
+    }
+    return false; // externe sans snapshot paiement → on masque par sécurité
+  });
+  const deduped = dedupeOpenDeliveries(paidUp);
   const sousIds = [...new Set(deduped.map((r) => r.sous_commande_id).filter(Boolean))];
   if (sousIds.length === 0) return deduped;
 
