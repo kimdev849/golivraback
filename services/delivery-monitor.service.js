@@ -240,12 +240,70 @@ async function escalateDelivery(db, liv, newLevel, elapsedMinutes) {
 }
 
 /**
+ * Tente d'assigner automatiquement un livreur à une livraison en attente.
+ * Cherche le livreur le plus proche (si GPS dispo) ou le moins chargé.
+ */
+async function tryAutoAssignDelivery(db, livraison) {
+  try {
+    const dispatchService = require('./dispatch.service');
+    const result = await dispatchService.autoAssignLivreur(db, livraison.id);
+    if (result && result.livreur_id) {
+      console.log(`[delivery-monitor] ✅ Auto-assigné livraison ${livraison.id.slice(0, 8)} au livreur ${result.livreur_id.slice(0, 8)}`);
+      return true;
+    }
+  } catch (err) {
+    console.warn(`[delivery-monitor] Auto-assign failed for ${livraison.id.slice(0, 8)}:`, err?.message || err);
+  }
+  return false;
+}
+
+/**
  * Vérifie toutes les livraisons actives et applique l'escalade.
- * À appeler toutes les 5 minutes.
+ * Tente aussi l'assignation automatique pour les livraisons en attente.
+ * À appeler toutes les 2 minutes.
  */
 async function monitorActiveDeliveries() {
   const db = getDb();
 
+  // ── 1. Auto-assign les livraisons EN ATTENTE (sans livreur) ──────────
+  const { data: pending, error: pendErr } = await db
+    .from('livraisons')
+    .select('*')
+    .eq('statut', 'en_attente')
+    .is('livreur_id', null)
+    .order('created_at', { ascending: true });
+
+  if (!pendErr && pending && pending.length > 0) {
+    // Filtrer les livraisons externes sans paiement validé
+    const assignable = pending.filter((l) => {
+      if (l.type_livraison !== 'externe') return true;
+      const snap = l.adresse_livraison_snapshot;
+      if (snap && typeof snap === 'object' && snap.paiement_statut) {
+        return snap.paiement_statut === 'valide';
+      }
+      return false;
+    });
+
+    if (assignable.length > 0) {
+      // Vérifier s'il y a des livreurs disponibles avant de tenter
+      const dispatchService = require('./dispatch.service');
+      const available = await dispatchService.listAvailableCouriers(db);
+      if (available.length > 0) {
+        let assigned = 0;
+        for (const liv of assignable) {
+          const ok = await tryAutoAssignDelivery(db, liv);
+          if (ok) assigned++;
+          // Ne pas tout assigner d'un coup — max 3 par cycle
+          if (assigned >= 3) break;
+        }
+        if (assigned > 0) {
+          console.log(`[delivery-monitor] 🚀 Auto-assigné ${assigned}/${assignable.length} livraisons en attente (${available.length} livreurs dispo)`);
+        }
+      }
+    }
+  }
+
+  // ── 2. Escalade des incidents (livraisons déjà assignées) ──────────
   const { data: livraisons, error } = await db
     .from('livraisons')
     .select('*')
@@ -263,10 +321,6 @@ async function monitorActiveDeliveries() {
   let escalations = 0;
 
   for (const liv of list) {
-    // La date de référence est la dernière transition significative :
-    // - attribuee_at : quand le livreur a accepté
-    // - collectee_at : quand le colis a été récupéré
-    // On utilise la plus récente pour calculer le retard.
     const referenceDate = liv.collectee_at || liv.attribuee_at || liv.created_at;
     const elapsedMs = Date.now() - new Date(referenceDate).getTime();
     const elapsedMinutes = minutesSince(referenceDate);

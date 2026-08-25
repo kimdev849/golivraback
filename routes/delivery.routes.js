@@ -13,6 +13,8 @@ const {
   acceptDelivery,
   advanceDelivery,
   completeDelivery,
+  reportDelayReason,
+  getDelayReasons,
 } = require('../controllers/delivery.controller');
 const { getAdminActiveTracking } = require('../controllers/tracking.controller');
 const {
@@ -109,5 +111,7 @@ router.post('/courier/position', authMiddleware, requireRoles(['livreur', 'admin
 router.post('/courier/accept/:deliveryId', authMiddleware, requireRoles(['livreur', 'admin']), acceptDelivery);
 router.post('/courier/advance/:deliveryId', authMiddleware, requireRoles(['livreur', 'admin']), advanceDelivery);
 router.post('/courier/complete/:deliveryId', authMiddleware, requireRoles(['livreur', 'admin']), completeDelivery);
+router.get('/courier/delay-reasons', getDelayReasons);
+router.post('/courier/delay-reason/:deliveryId', authMiddleware, requireRoles(['livreur', 'admin']), reportDelayReason);
 
 module.exports = router;

@@ -202,6 +202,115 @@ async function retryMyDeliveryDispatch(req, res, next) {
   }
 }
 
+// ── Incident Center ───────────────────────────────────────────────────────
+
+async function listMyIncidents(req, res, next) {
+  try {
+    const company = req.logisticsCompany;
+    const db = getDb();
+    const incidentService = require('../services/incident.service');
+    const incidents = await incidentService.listIncidentsForCompany(db, company.id);
+    return res.json(incidents);
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function getMyIncidentStats(req, res, next) {
+  try {
+    const company = req.logisticsCompany;
+    const db = getDb();
+    const incidentService = require('../services/incident.service');
+    const stats = await incidentService.getIncidentStats(db, company.id);
+    return res.json(stats);
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function getMyIncidentDetail(req, res, next) {
+  try {
+    const { deliveryId } = req.params;
+    const db = getDb();
+    const incidentService = require('../services/incident.service');
+    const { data: liv, error } = await db
+      .from('livraisons')
+      .select('*')
+      .eq('id', deliveryId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!liv) throw createHttpError(404, 'Livraison introuvable.');
+    const detail = await incidentService.resolveDeliveryInfo(db, liv);
+    return res.json(detail);
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function resolveMyIncident(req, res, next) {
+  try {
+    const { deliveryId } = req.params;
+    const { raison } = req.body || {};
+    const db = getDb();
+    const incidentService = require('../services/incident.service');
+    const result = await incidentService.resolveIncident(db, deliveryId, raison, req.auth.userId);
+    return res.json(result);
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function cancelMyDelivery(req, res, next) {
+  try {
+    const { deliveryId } = req.params;
+    const { raison } = req.body || {};
+    const db = getDb();
+    const incidentService = require('../services/incident.service');
+    const result = await incidentService.cancelDelivery(db, deliveryId, raison, req.auth.userId);
+    return res.json(result);
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function addMyIncidentNote(req, res, next) {
+  try {
+    const { deliveryId } = req.params;
+    const { note } = req.body || {};
+    if (!note) throw createHttpError(400, 'Note requise.');
+    const db = getDb();
+    const incidentService = require('../services/incident.service');
+    const result = await incidentService.addIncidentNote(db, deliveryId, note, req.auth.userId);
+    return res.json(result);
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function escalateMyIncident(req, res, next) {
+  try {
+    const { deliveryId } = req.params;
+    const db = getDb();
+    const incidentService = require('../services/incident.service');
+    const result = await incidentService.escalateIncident(db, deliveryId, req.auth.userId);
+    return res.json(result);
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function listMyActiveDeliveries(req, res, next) {
+  try {
+    const company = req.logisticsCompany;
+    const db = getDb();
+    const incidentService = require('../services/incident.service');
+    const deliveries = await incidentService.listAllActiveDeliveriesForCompany(db, company.id);
+    return res.json(deliveries);
+  } catch (error) {
+    return next(error);
+  }
+}
+
 module.exports = {
   getMyCompany,
   getMyWallet,
@@ -216,4 +325,12 @@ module.exports = {
   activateMyCourier,
   listMyDeliveries,
   retryMyDeliveryDispatch,
+  listMyIncidents,
+  getMyIncidentStats,
+  getMyIncidentDetail,
+  resolveMyIncident,
+  cancelMyDelivery,
+  addMyIncidentNote,
+  escalateMyIncident,
+  listMyActiveDeliveries,
 };

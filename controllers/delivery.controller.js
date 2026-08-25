@@ -925,6 +925,38 @@ async function getCourierMissionDetail(req, res, next) {
   }
 }
 
+// ── Delay reason reporting ────────────────────────────────────────────────
+const DELAY_REASONS = [
+  { key: 'trafic',          label: 'Trafic important',           emoji: '🚗' },
+  { key: 'client_difficile', label: 'Client difficile à trouver', emoji: '🏠' },
+  { key: 'adresse_incorrecte', label: 'Adresse incorrecte',       emoji: '📍' },
+  { key: 'probleme_vehicule', label: 'Problème véhicule',        emoji: '🛵' },
+  { key: 'client_injoignable', label: 'Client injoignable',       emoji: '📞' },
+  { key: 'autre',           label: 'Autre problème',             emoji: '⚠️' },
+];
+
+async function reportDelayReason(req, res, next) {
+  try {
+    const { deliveryId } = req.params;
+    const { reason, detail } = req.body || {};
+    if (!reason) throw createHttpError(400, 'Motif requis.');
+    if (!DELAY_REASONS.find((r) => r.key === reason)) {
+      throw createHttpError(400, 'Motif invalide. Valeurs acceptées : ' + DELAY_REASONS.map((r) => r.key).join(', '));
+    }
+    const db = getDb();
+    const courierId = await getLivreurIdForUser(db, req.auth.userId);
+    const incidentService = require('../services/incident.service');
+    const result = await incidentService.reportDelayReason(db, deliveryId, courierId, reason, detail);
+    return res.json(result);
+  } catch (error) {
+    return next(error);
+  }
+}
+
+function getDelayReasons(_req, res) {
+  return res.json(DELAY_REASONS);
+}
+
 module.exports = {
   getDeliveryStatus,
   getDeliveryDetails,
@@ -936,4 +968,6 @@ module.exports = {
   acceptDelivery,
   advanceDelivery,
   completeDelivery,
+  reportDelayReason,
+  getDelayReasons,
 };

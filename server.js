@@ -398,9 +398,9 @@ async function startServer() {
   observabilityScheduler.start();
   pawapayService.logConfig();
   paymentsScheduler.start();
-  // ── Delivery incident monitor (every 5 min) ──────────────────────────────
+  // ── Delivery monitor + auto-assign (every 2 min) ────────────────────────
   const { monitorActiveDeliveries } = require('./services/delivery-monitor.service');
-  const MONITOR_INTERVAL_MS = 5 * 60 * 1000;
+  const MONITOR_INTERVAL_MS = 2 * 60 * 1000;
   setInterval(() => {
     monitorActiveDeliveries().catch((err) => {
       console.error('[delivery-monitor] Error:', err?.message || err);
