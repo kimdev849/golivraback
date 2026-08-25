@@ -173,7 +173,8 @@ async function getAdminStats(req, res, next) {
       db
         .from('utilisateurs')
         .select('id, role_id, est_approuve')
-        .eq('est_approuve', false),
+        .eq('est_approuve', false)
+        .not('est_actif', 'eq', false),
       db.from('commandes').select('id', { count: 'exact', head: true }),
       db.from('livraisons').select('id, type_livraison, sous_commande_id, statut'),
       // Sessions actives = comptes connectés (sessions non expirées et non révoquées).
@@ -385,6 +386,21 @@ async function rejectEnterprise(req, res, next) {
     });
     if (!updated) throw createHttpError(404, 'Commerce introuvable.');
 
+    // Notifier le propriétaire du commerce du refus.
+    if (updated.row.proprietaire_id) {
+      const { notifyUserSafe } = require('../services/notification.service');
+      const label = updated.kind === 'restaurant' ? 'restaurant' : 'boutique';
+      void notifyUserSafe(db, {
+        utilisateurId: updated.row.proprietaire_id,
+        type: 'commerce_rejete',
+        titre: `${updated.row.nom} — ${label} refusé`,
+        corps: typeof raison === 'string' && raison.trim()
+          ? `Votre ${label} « ${updated.row.nom} » a été refusé par l'administration. Motif : ${raison.trim()}`
+          : `Votre ${label} « ${updated.row.nom} » a été refusé par l'administration.`,
+        data: { enterprise_id: enterpriseId, enterprise_type: updated.kind, action: 'open_vendor_home' },
+      });
+    }
+
     const owners = await loadOwnerMap(db, [updated.row.proprietaire_id]);
     const owner = owners.get(updated.row.proprietaire_id) || null;
     const mapped =
@@ -427,8 +443,9 @@ async function listPendingUsers(req, res, next) {
     const db = getDb();
     const { data: users, error } = await db
       .from('utilisateurs')
-      .select('id, nom, telephone, email, est_approuve, created_at, role_id')
+      .select('id, nom, telephone, email, est_approuve, est_actif, created_at, role_id')
       .eq('est_approuve', false)
+      .not('est_actif', 'eq', false)
       .order('created_at', { ascending: false });
     if (error) throw error;
 
