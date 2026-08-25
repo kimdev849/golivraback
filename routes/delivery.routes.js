@@ -32,7 +32,7 @@ async function publicTrackExternalDelivery(req, res, next) {
 
     const { data: liv, error } = await db
       .from('livraisons')
-      .select('id, statut, client_nom, client_telephone, created_at, livree_at, montant_total, restaurant_id, boutique_id')
+      .select('id, statut, client_nom, client_telephone, created_at, livree_at, montant_total, restaurant_id, boutique_id, adresse_livraison_snapshot, attribuee_at, collectee_at')
       .eq('id', deliveryId)
       .eq('type_livraison', 'externe')
       .maybeSingle();
@@ -54,6 +54,10 @@ async function publicTrackExternalDelivery(req, res, next) {
       commerceNom = b?.nom || '';
     }
 
+    // Adresse depuis le snapshot
+    const snap = liv.adresse_livraison_snapshot;
+    const adresseLivraison = snap && typeof snap === 'object' ? snap.texte || '' : typeof snap === 'string' ? snap : '';
+
     return res.json({
       id: liv.id,
       statut: liv.statut,
@@ -61,7 +65,10 @@ async function publicTrackExternalDelivery(req, res, next) {
       commerce_nom: commerceNom,
       montant_total: liv.montant_total,
       created_at: liv.created_at,
-      livree_at: liv.livree_at,
+      attribuee_at: liv.attribuee_at || null,
+      collectee_at: liv.collectee_at || null,
+      livree_at: liv.livree_at || null,
+      adresse_livraison: adresseLivraison,
     });
   } catch (err) {
     return next(err);

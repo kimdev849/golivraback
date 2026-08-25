@@ -916,7 +916,7 @@ async function getCourierMissionDetail(req, res, next) {
       delivery_address: deliveryAddress,
       delivery_name: deliveryName,
       delivery_phone: deliveryPhone,
-      frais_livraison: liv.montant_livreur || liv.commission_logistique || 0,
+      frais_livraison: liv.montant_total || 0,
       montant_total: liv.montant_total || 0,
       created_at: liv.created_at,
     });
