@@ -247,8 +247,7 @@ async function listAvailableCouriers(db) {
       'id, type_vehicule, entreprise_logistique_id, nb_livraisons_total, utilisateur_id, est_disponible, est_approuve, disponibilite_bloquee_entreprise',
     )
     .eq('est_disponible', true)
-    .eq('est_approuve', true)
-    .eq('disponibilite_bloquee_entreprise', false);
+    .eq('est_approuve', true);
   if (error) throw error;
 
   const busyIds = await getBusyCourierIds(db);
@@ -308,6 +307,17 @@ async function onSousCommandeReady(db, sousCommandeId) {
   if (!created) return null;
   if (created.livreur_id) return created;
   if (created.statut === 'en_attente') {
+    // 1. Tente l'assignation automatique immédiate
+    try {
+      const autoResult = await autoAssignLivreur(db, created.id);
+      if (autoResult && autoResult.livreur_id) {
+        console.log(`[dispatch] ✅ Auto-assign immédiat pour livraison ${created.id.slice(0, 8)} → livreur ${autoResult.livreur_id.slice(0, 8)}`);
+        return autoResult;
+      }
+    } catch (err) {
+      console.warn(`[dispatch] Auto-assign immédiat échoué pour ${created.id.slice(0, 8)}:`, err?.message || err);
+    }
+    // 2. Fallback : notification aux livreurs disponibles
     const { notifyAvailableCouriersForDelivery } = require('./notification.service');
     await notifyAvailableCouriersForDelivery(db, created.id).catch(() => {});
   }

@@ -287,18 +287,17 @@ async function monitorActiveDeliveries() {
     if (assignable.length > 0) {
       // Vérifier s'il y a des livreurs disponibles avant de tenter
       const dispatchService = require('./dispatch.service');
-      const available = await dispatchService.listAvailableCouriers(db);
-      if (available.length > 0) {
-        let assigned = 0;
-        for (const liv of assignable) {
-          const ok = await tryAutoAssignDelivery(db, liv);
-          if (ok) assigned++;
-          // Ne pas tout assigner d'un coup — max 3 par cycle
-          if (assigned >= 3) break;
-        }
-        if (assigned > 0) {
-          console.log(`[delivery-monitor] 🚀 Auto-assigné ${assigned}/${assignable.length} livraisons en attente (${available.length} livreurs dispo)`);
-        }
+      let assigned = 0;
+      // Max 10 assignations par cycle (max 5 min d'attente pour la plus vieille)
+      for (const liv of assignable) {
+        const ok = await tryAutoAssignDelivery(db, liv);
+        if (ok) assigned++;
+        if (assigned >= 10) break;
+      }
+      if (assigned > 0) {
+        console.log(`[delivery-monitor] 🚀 Auto-assigné ${assigned}/${assignable.length} livraisons en attente`);
+      } else if (assignable.length > 0) {
+        console.log(`[delivery-monitor] ⚠️ ${assignable.length} livraisons en attente, aucun livreur disponible pour auto-assign`);
       }
     }
   }

@@ -23,6 +23,19 @@ async function insertNotification(db, { utilisateurId, type, titre, corps, data 
  * Insère en DB et envoie un push à chacun.
  */
 async function notifyAvailableCouriersForDelivery(db, livraisonId) {
+  // 1. Tente l'auto-assign immédiat (best-effort)
+  try {
+    const { autoAssignLivreur } = require('./dispatch.service');
+    const autoResult = await autoAssignLivreur(db, livraisonId);
+    if (autoResult && autoResult.livreur_id) {
+      console.log(`[notification] ✅ Auto-assign OK pour ${livraisonId.slice(0, 8)} → ${autoResult.livreur_id.slice(0, 8)}`);
+      return { notified: 0, auto_assigned: true };
+    }
+  } catch (err) {
+    console.warn(`[notification] Auto-assign best-effort échoué:`, err?.message || err);
+  }
+
+  // 2. Fallback : notification push aux livreurs disponibles
   const { listAvailableCouriers } = require('./dispatch.service');
   const couriers = await listAvailableCouriers(db);
   if (!couriers.length) return { notified: 0 };
