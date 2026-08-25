@@ -7,6 +7,7 @@ const {
   getDeliveryDetails,
   getCourierProfile,
   listCourierMissions,
+  getCourierMissionDetail,
   updateCourierAvailability,
   updateCourierPosition,
   acceptDelivery,
@@ -95,6 +96,7 @@ router.get(
 );
 router.get('/courier/me', authMiddleware, requireRoles(['livreur', 'admin']), getCourierProfile);
 router.get('/courier/missions', authMiddleware, requireRoles(['livreur', 'admin']), listCourierMissions);
+router.get('/courier/missions/:deliveryId', authMiddleware, requireRoles(['livreur', 'admin']), getCourierMissionDetail);
 router.patch('/courier/availability', authMiddleware, requireRoles(['livreur', 'admin']), updateCourierAvailability);
 router.post('/courier/position', authMiddleware, requireRoles(['livreur', 'admin']), updateCourierPosition);
 router.post('/courier/accept/:deliveryId', authMiddleware, requireRoles(['livreur', 'admin']), acceptDelivery);

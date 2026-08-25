@@ -340,9 +340,12 @@ async function getDeliveryDetails(req, res, next) {
       }
     } else if (role === 'restaurateur' || role === 'commercant') {
       // Le créateur de la livraison externe garde toujours accès au suivi,
-      // même si la résolution du commerce échoue.
+      // même si la résolution du commerce échoue. Le createur_utilisateur_id
+      // est stocké dans le snapshot d'adresse, pas en colonne directe.
+      const snap = livraison.adresse_livraison_snapshot;
+      const creatorFromSnap = snap && typeof snap === 'object' ? snap.createur_utilisateur_id : null;
       const owns = commerce?.proprietaire_id === req.auth.userId
-        || livraison.createur_utilisateur_id === req.auth.userId;
+        || creatorFromSnap === req.auth.userId;
       if (!owns) throw createHttpError(403, 'Accès non autorisé à cette livraison');
     } else if (role === 'livreur') {
       const myLivreurId = await getLivreurIdForUser(db, req.auth.userId);
@@ -870,11 +873,64 @@ async function completeDelivery(req, res, next) {
   }
 }
 
+async function getCourierMissionDetail(req, res, next) {
+  try {
+    const { deliveryId } = req.params;
+    const db = getDb();
+    const livreurId = await getLivreurIdForUser(db, req.auth.userId);
+    if (!livreurId) throw createHttpError(404, 'Profil livreur introuvable.');
+
+    const { data: liv, error } = await db
+      .from('livraisons')
+      .select('*')
+      .eq('id', deliveryId)
+      .eq('livreur_id', livreurId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!liv) throw createHttpError(404, 'Mission introuvable.');
+
+    // Resolver addresses
+    let pickupAddress = '';
+    let pickupName = '';
+    let pickupPhone = '';
+    let deliveryAddress = '';
+    let deliveryName = '';
+    let deliveryPhone = '';
+    const collecteSnap = liv.adresse_collecte_snapshot;
+    if (collecteSnap && typeof collecteSnap === 'object') {
+      pickupAddress = collecteSnap.texte || '';
+    }
+    const livraisonSnap = liv.adresse_livraison_snapshot;
+    if (livraisonSnap && typeof livraisonSnap === 'object') {
+      deliveryAddress = livraisonSnap.texte || '';
+    }
+    deliveryName = liv.client_nom || '';
+    deliveryPhone = liv.client_telephone || '';
+
+    return res.json({
+      id: liv.id,
+      statut: liv.statut,
+      pickup_address: pickupAddress,
+      pickup_name: pickupName,
+      pickup_phone: pickupPhone,
+      delivery_address: deliveryAddress,
+      delivery_name: deliveryName,
+      delivery_phone: deliveryPhone,
+      frais_livraison: liv.montant_livreur || liv.commission_logistique || 0,
+      montant_total: liv.montant_total || 0,
+      created_at: liv.created_at,
+    });
+  } catch (error) {
+    return next(error);
+  }
+}
+
 module.exports = {
   getDeliveryStatus,
   getDeliveryDetails,
   getCourierProfile,
   listCourierMissions,
+  getCourierMissionDetail,
   updateCourierAvailability,
   updateCourierPosition,
   acceptDelivery,
