@@ -174,7 +174,7 @@ async function getAdminStats(req, res, next) {
         .from('utilisateurs')
         .select('id, role_id, est_approuve')
         .eq('est_approuve', false)
-        .not('est_actif', 'eq', false),
+        .is('raison_rejet', null),
       db.from('commandes').select('id', { count: 'exact', head: true }),
       db.from('livraisons').select('id, type_livraison, sous_commande_id, statut'),
       // Sessions actives = comptes connectés (sessions non expirées et non révoquées).
@@ -441,11 +441,15 @@ async function suspendEnterprise(req, res, next) {
 async function listPendingUsers(req, res, next) {
   try {
     const db = getDb();
+    // Un compte en attente a est_approuve=false ET raison_rejet=null.
+    // Quand on rejète, raison_rejet passe à non-null → le compte disparaît
+    // de cette liste sans dépendre d'une colonne est_actif qui pourrait
+    // ne pas exister ou être ignorée par Supabase.
     const { data: users, error } = await db
       .from('utilisateurs')
-      .select('id, nom, telephone, email, est_approuve, est_actif, created_at, role_id')
+      .select('id, nom, telephone, email, est_approuve, created_at, role_id')
       .eq('est_approuve', false)
-      .not('est_actif', 'eq', false)
+      .is('raison_rejet', null)
       .order('created_at', { ascending: false });
     if (error) throw error;
 
@@ -537,7 +541,7 @@ async function rejectUser(req, res, next) {
       .update({
         est_approuve: false,
         est_actif: false,
-        raison_rejet: typeof raison === 'string' && raison.trim() ? raison.trim() : null,
+        raison_rejet: typeof raison === 'string' && raison.trim() ? raison.trim() : 'Rejeté',
       })
       .eq('id', userId)
       .select('id, nom, telephone, email, est_approuve, created_at, role_id')
@@ -551,6 +555,7 @@ async function rejectUser(req, res, next) {
     // Sans ça, le restaurant/boutique reste « en_attente » dans la liste
     // marchands et le compte rejeté réapparaît.
     const roleNom = roleRow?.nom;
+    const raisonRejet = typeof raison === 'string' && raison.trim() ? raison.trim() : 'Rejeté par l\'administration';
     if (roleNom === 'restaurateur' || roleNom === 'commercant') {
       const table = roleNom === 'restaurateur' ? 'restaurants' : 'boutiques';
       await db
@@ -558,7 +563,7 @@ async function rejectUser(req, res, next) {
         .update({
           statut: 'rejetee',
           statut_moderation: 'rejetee',
-          raison_rejet: typeof raison === 'string' && raison.trim() ? raison.trim() : null,
+          raison_rejet: raisonRejet,
         })
         .eq('proprietaire_id', userId);
     }
