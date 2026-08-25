@@ -501,7 +501,10 @@ async function syncCommandeStatutFromSousCommandes(db, commandeId) {
   // ou expirées/remboursées) → la commande est annulée (cas mixte inclus).
   else if (statuts.every((s) => s === 'annulee' || s === 'refusee' || s === 'remboursee')) next = 'annulee';
   else if (statuts.some((s) => s === 'livree')) next = 'partiellement_livree';
-  else if (statuts.some((s) => s === 'collectee' || s === 'prete')) next = 'en_livraison';
+  // prete = commande prête pour le livreur (pas encore de livreur assigné)
+  // collectee = livreur a récupéré le colis → en livraison vers le client
+  else if (statuts.some((s) => s === 'collectee')) next = 'en_livraison';
+  else if (statuts.some((s) => s === 'prete')) next = 'prete';
   else if (statuts.some((s) => s === 'en_preparation')) next = 'en_preparation';
   else if (statuts.every((s) => s === 'acceptee')) next = 'acceptee';
   else if (statuts.some((s) => s === 'acceptee')) next = 'partiellement_acceptee';

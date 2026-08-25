@@ -167,6 +167,7 @@ async function createExternalDelivery(db, userId, payload) {
     note,
     methodePaiement,
     telephonePaiement,
+    clientDeliveryFee,
   } = payload;
 
   if (!establishmentId || !establishmentType) {
@@ -199,17 +200,23 @@ async function createExternalDelivery(db, userId, payload) {
   }
 
   // Prix selon la ZONE / l'arrondissement de livraison (fallback : frais du commerce).
+  // Si le commerce a fourni clientDeliveryFee (tarif affiché dans le formulaire),
+  // on l'utilise directement pour éviter la divergence client↔backend.
   let fraisLivraison = null;
-  try {
-    const zonePrice = await resolveDeliveryPriceForQuartier(db, livraisonSnap.quartier || null);
-    if (zonePrice?.price_fcfa != null && zonePrice.price_fcfa > 0) {
-      fraisLivraison = Math.round(zonePrice.price_fcfa);
+  if (typeof clientDeliveryFee === 'number' && clientDeliveryFee > 0 && Number.isFinite(clientDeliveryFee)) {
+    fraisLivraison = Math.round(clientDeliveryFee);
+  } else {
+    try {
+      const zonePrice = await resolveDeliveryPriceForQuartier(db, livraisonSnap.quartier || null);
+      if (zonePrice?.price_fcfa != null && zonePrice.price_fcfa > 0) {
+        fraisLivraison = Math.round(zonePrice.price_fcfa);
+      }
+    } catch {
+      fraisLivraison = null;
     }
-  } catch {
-    fraisLivraison = null;
-  }
-  if (fraisLivraison == null || fraisLivraison <= 0) {
-    fraisLivraison = await resolveDeliveryFeeForEstablishment(db, est);
+    if (fraisLivraison == null || fraisLivraison <= 0) {
+      fraisLivraison = await resolveDeliveryFeeForEstablishment(db, est);
+    }
   }
 
   const config = await getPricingConfig(db);
