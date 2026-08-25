@@ -237,6 +237,125 @@ async function getUsageDashboard({ windowDays = 30, topZonesLimit = 8 } = {}) {
     previousNewMobileCount = count || 0;
   }
 
+  // ── Durée moyenne de session (dérivée de request_metrics) ──
+  // Pour chaque user_id actif 30j, on calcule le delta entre la 1ère et la
+  // dernière requête du jour. La "session" est approximée comme la plage
+  // d'activité journalière (première → dernière requête).
+  let avgSessionDurationMin = 0;
+  let medianSessionDurationMin = 0;
+  if (reqRows30d.length > 0) {
+    const byUser = new Map();
+    for (const r of reqRows30d) {
+      if (!r.user_id) continue;
+      if (!byUser.has(r.user_id)) byUser.set(r.user_id, []);
+      byUser.get(r.user_id).push(r);
+    }
+    const sessionDurations = [];
+    for (const rows of byUser.values()) {
+      // On groupe par jour puis calcule la plage d'activité par jour.
+      const byDay = new Map();
+      for (const r of rows) {
+        const day = new Date(r.created_at).toISOString().slice(0, 10);
+        if (!byDay.has(day)) byDay.set(day, []);
+        byDay.get(day).push(r);
+      }
+      for (const dayRows of byDay.values()) {
+        if (dayRows.length < 2) continue; // 1 requête = pas de durée mesurable
+        const times = dayRows.map((r) => new Date(r.created_at).getTime()).sort((a, b) => a - b);
+        const durationMin = (times[times.length - 1] - times[0]) / 60_000;
+        if (durationMin >= 0 && durationMin < 1440) sessionDurations.push(durationMin);
+      }
+    }
+    if (sessionDurations.length > 0) {
+      const sum = sessionDurations.reduce((s, d) => s + d, 0);
+      avgSessionDurationMin = Math.round((sum / sessionDurations.length) * 10) / 10;
+      sessionDurations.sort((a, b) => a - b);
+      const mid = Math.floor(sessionDurations.length / 2);
+      medianSessionDurationMin =
+        sessionDurations.length % 2 === 0
+          ? Math.round(((sessionDurations[mid - 1] + sessionDurations[mid]) / 2) * 10) / 10
+          : Math.round(sessionDurations[mid] * 10) / 10;
+    }
+  }
+
+  // ── Taux de conversion commande → livraison ──
+  const commandesAnnulees = commandesRows.filter((c) =>
+    ['annulee', 'refusee', 'remboursee'].includes(c.statut),
+  ).length;
+  const commandesEnCours = commandesRows.filter((c) =>
+    ['en_attente', 'partiellement_acceptee', 'acceptee', 'en_preparation', 'prete', 'en_livraison'].includes(c.statut),
+  ).length;
+  const tauxLivraison = commandesTotal > 0
+    ? Math.round((commandesTerminees / commandesTotal) * 1000) / 10
+    : 0;
+  const tauxAnnulation = commandesTotal > 0
+    ? Math.round((commandesAnnulees / commandesTotal) * 1000) / 10
+    : 0;
+
+  // ── Délai moyen de livraison (commande créée → livrée) ──
+  let avgDeliveryTimeMin = 0;
+  const livrees = commandesRows.filter((c) =>
+    ['livree', 'partiellement_livree'].includes(c.statut),
+  );
+  if (livrees.length > 0) {
+    const livreeCmdIds = livrees.map((c) => c.id);
+    const { data: livScIds } = await db.from('sous_commandes').select('id').in('commande_id', livreeCmdIds).limit(500);
+    const scIds = (livScIds || []).map((r) => r.id);
+    if (scIds.length > 0) {
+      const { data: livRows } = await db
+        .from('livraisons')
+        .select('sous_commande_id, livree_at')
+        .not('livree_at', 'is', null)
+        .in('sous_commande_id', scIds);
+      if (livRows && livRows.length > 0) {
+        const { data: scMap } = await db.from('sous_commandes').select('id, commande_id').in('id', livRows.map((r) => r.sous_commande_id));
+        const scToCmd = new Map((scMap || []).map((r) => [r.id, r.commande_id]));
+        const cmdCreatedAt = new Map(commandesRows.map((c) => [c.id, new Date(c.created_at).getTime()]));
+        const durations = [];
+        for (const lr of livRows) {
+          const cmdId = scToCmd.get(lr.sous_commande_id);
+          const created = cmdCreatedAt.get(cmdId);
+          const delivered = new Date(lr.livree_at).getTime();
+          if (created && delivered && delivered > created) {
+            durations.push((delivered - created) / 60_000);
+          }
+        }
+        if (durations.length > 0) {
+          avgDeliveryTimeMin = Math.round(durations.reduce((s, d) => s + d, 0) / durations.length);
+        }
+      }
+    }
+  }
+
+  // ── Top commerces (par nombre de commandes dans la fenêtre) ──
+  const commerceOrderCount = new Map();
+  const { data: topScs } = await db
+    .from('sous_commandes')
+    .select('commande_id, restaurant_id, boutique_id')
+    .in('commande_id', commandesRows.map((c) => c.id).slice(0, 2000));
+  for (const sc of topScs || []) {
+    const eid = sc.restaurant_id || sc.boutique_id;
+    if (!eid) continue;
+    commerceOrderCount.set(eid, (commerceOrderCount.get(eid) || 0) + 1);
+  }
+  const topCommerceIds = [...commerceOrderCount.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .map(([id]) => id);
+  const topCommerces = [];
+  if (topCommerceIds.length > 0) {
+    const [restos, bouts] = await Promise.all([
+      db.from('restaurants').select('id, nom').in('id', topCommerceIds),
+      db.from('boutiques').select('id, nom').in('id', topCommerceIds),
+    ]);
+    const nameMap = new Map();
+    for (const r of restos.data || []) nameMap.set(r.id, r.nom || 'Restaurant');
+    for (const b of bouts.data || []) nameMap.set(b.id, b.nom || 'Boutique');
+    for (const eid of topCommerceIds) {
+      topCommerces.push({ id: eid, nom: nameMap.get(eid) || 'Commerce', commandes: commerceOrderCount.get(eid) || 0 });
+    }
+  }
+
   return {
     window_days: windowDays,
     generated_at: new Date().toISOString(),
@@ -264,9 +383,21 @@ async function getUsageDashboard({ windowDays = 30, topZonesLimit = 8 } = {}) {
       requetes_30j: reqRows30d.length,
       commandes_30j: commandesTotal,
       commandes_livrees_30j: commandesTerminees,
+      commandes_annulees_30j: commandesAnnulees,
+      commandes_en_cours_30j: commandesEnCours,
+      taux_livraison_30j: tauxLivraison,
+      taux_annulation_30j: tauxAnnulation,
       moyenne_requetes_par_utilisateur_actif_30j: avgRequestsPerActiveUser30d,
       moyenne_commandes_par_client_actif_30j: avgOrdersPerActiveClient30d,
     },
+    sessions: {
+      duree_moyenne_min: avgSessionDurationMin,
+      duree_mediane_min: medianSessionDurationMin,
+    },
+    livraison: {
+      delai_moyen_min: avgDeliveryTimeMin,
+    },
+    top_commerces: topCommerces,
     top_zones_livraison: topZones.map((z) => ({
       quartier: z.quartier,
       commandes: z.order_count,
