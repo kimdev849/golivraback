@@ -398,6 +398,21 @@ async function startServer() {
   observabilityScheduler.start();
   pawapayService.logConfig();
   paymentsScheduler.start();
+  // ── Delivery incident monitor (every 5 min) ──────────────────────────────
+  const { monitorActiveDeliveries } = require('./services/delivery-monitor.service');
+  const MONITOR_INTERVAL_MS = 5 * 60 * 1000;
+  setInterval(() => {
+    monitorActiveDeliveries().catch((err) => {
+      console.error('[delivery-monitor] Error:', err?.message || err);
+    });
+  }, MONITOR_INTERVAL_MS);
+  // Run once on startup (after 30s to let DB connect)
+  setTimeout(() => {
+    monitorActiveDeliveries().catch((err) => {
+      console.error('[delivery-monitor] Startup run error:', err?.message || err);
+    });
+  }, 30_000);
+
   const PORT = process.env.PORT || 3000;
   app.listen(PORT, () => {
     const env = process.env.NODE_ENV || 'development';

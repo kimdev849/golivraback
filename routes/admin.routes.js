@@ -82,6 +82,36 @@ router.get('/incidents', ...adminOnly, listAdminIncidents);
 router.get('/incidents/:incidentId', ...adminOnly, getAdminIncidentDetail);
 router.patch('/incidents/:incidentId/resolve', ...adminOnly, patchResolveIncident);
 
+// ── Livraisons nécessitant une intervention (incident monitor) ─────────
+const deliveryMonitor = require('../services/delivery-monitor.service');
+
+router.get('/delivery-incidents', ...adminOnly, async (req, res, next) => {
+  try {
+    const { getDb } = require('../config/db');
+    const db = getDb();
+    const incidents = await deliveryMonitor.listDeliveriesNeedingIntervention(db);
+    return res.json(incidents);
+  } catch (err) { return next(err); }
+});
+
+router.patch('/delivery-incidents/:deliveryId/resolve', ...adminOnly, async (req, res, next) => {
+  try {
+    const { getDb } = require('../config/db');
+    const db = getDb();
+    const result = await deliveryMonitor.resolveIncident(db, req.params.deliveryId, req.body?.raison, req.auth.userId);
+    return res.json(result);
+  } catch (err) { return next(err); }
+});
+
+router.patch('/delivery-incidents/:deliveryId/cancel', ...adminOnly, async (req, res, next) => {
+  try {
+    const { getDb } = require('../config/db');
+    const db = getDb();
+    const result = await deliveryMonitor.cancelStuckDelivery(db, req.params.deliveryId, req.body?.raison, req.auth.userId);
+    return res.json(result);
+  } catch (err) { return next(err); }
+});
+
 // ── Gestion des campagnes marketing ─────────────────────────────────────
 router.get('/campagnes', ...adminOnly, campaignAdmin.getCampagnesList);
 router.get('/campagnes/:campagneId', ...adminOnly, campaignAdmin.getCampagneDetail);
