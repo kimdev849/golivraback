@@ -74,8 +74,8 @@ function minutesSince(isoDate) {
  */
 async function notifyUserSafe(db, { utilisateurId, type, titre, corps, data }) {
   try {
-    const { notifyUser } = require('./order-notify.service');
-    await notifyUser(db, { utilisateurId, type, titre, corps, data });
+    const { notifyUserSafe: notifySafe } = require('./notification.service');
+    await notifySafe(db, { utilisateurId, type, titre, corps, data });
   } catch {
     // Fallback : insert direct en DB
     try {
@@ -85,7 +85,7 @@ async function notifyUserSafe(db, { utilisateurId, type, titre, corps, data }) {
         titre,
         corps,
         data: data || {},
-        lue: false,
+        est_lue: false,
       });
     } catch { /* swallow */ }
   }
@@ -143,7 +143,7 @@ async function escalateDelivery(db, liv, newLevel, elapsedMinutes) {
 
   switch (newLevel) {
     case INCIDENT_RETARD:
-      // 30 min → alerte livreur + restaurant
+      // 30 min → alerte livreur + restaurant + admins
       if (courierUserId) {
         await notifyUserSafe(db, {
           utilisateurId: courierUserId,
@@ -162,10 +162,22 @@ async function escalateDelivery(db, liv, newLevel, elapsedMinutes) {
           data,
         });
       }
+      try {
+        const { data: admins } = await db.from('utilisateurs').select('id').eq('role', 'admin').eq('est_actif', true);
+        for (const admin of (admins || [])) {
+          await notifyUserSafe(db, {
+            utilisateurId: admin.id,
+            type: 'livraison_retard_admin',
+            titre: '⚠️ Retard de livraison',
+            corps: `${livraisonRef} pour ${destName} — ${elapsedMinutes} min de retard. Surveiller.`,
+            data,
+          });
+        }
+      } catch { /* swallow */ }
       break;
 
     case INCIDENT_INCIDENT:
-      // 1 h → notification renforcée
+      // 1 h → notification renforcée + admins
       if (courierUserId) {
         await notifyUserSafe(db, {
           utilisateurId: courierUserId,
@@ -184,6 +196,18 @@ async function escalateDelivery(db, liv, newLevel, elapsedMinutes) {
           data,
         });
       }
+      try {
+        const { data: admins } = await db.from('utilisateurs').select('id').eq('role', 'admin').eq('est_actif', true);
+        for (const admin of (admins || [])) {
+          await notifyUserSafe(db, {
+            utilisateurId: admin.id,
+            type: 'livraison_incident_admin',
+            titre: '🔴 Incident livraison',
+            corps: `${livraisonRef} pour ${destName} — ${elapsedMinutes} min sans progression. Intervention recommandée.`,
+            data,
+          });
+        }
+      } catch { /* swallow */ }
       break;
 
     case INCIDENT_ANOMALIE:
@@ -298,6 +322,27 @@ async function monitorActiveDeliveries() {
         console.log(`[delivery-monitor] 🚀 Auto-assigné ${assigned}/${assignable.length} livraisons en attente`);
       } else if (assignable.length > 0) {
         console.log(`[delivery-monitor] ⚠️ ${assignable.length} livraisons en attente, aucun livreur disponible pour auto-assign`);
+        // Notifier les admins qu'il y a des livraisons sans livreur
+        const LONG_WAIT_MINUTES = 15;
+        for (const liv of assignable) {
+          const waitMin = minutesSince(liv.created_at);
+          if (waitMin >= LONG_WAIT_MINUTES) {
+            try {
+              const { data: admins } = await db.from('utilisateurs').select('id').eq('role', 'admin').eq('est_actif', true);
+              const ref = `Livraison #${liv.id.slice(0, 8)}`;
+              const client = liv.client_nom || 'client';
+              for (const admin of (admins || [])) {
+                await notifyUserSafe(db, {
+                  utilisateurId: admin.id,
+                  type: 'livraison_sans_livreur',
+                  titre: '⚠️ Livraison sans livreur',
+                  corps: `${ref} pour ${client} attend un livreur depuis ${waitMin} min. Aucun livreur disponible.`,
+                  data: { livraison_id: liv.id, action: 'open_delivery' },
+                });
+              }
+            } catch { /* swallow */ }
+          }
+        }
       }
     }
   }
