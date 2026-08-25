@@ -40,12 +40,28 @@ async function authMiddleware(req, res, next) {
     }
 
     const { data: role } = await db.from('roles').select('nom').eq('id', user.role_id).maybeSingle();
+    const roleNom = role ? role.nom : null;
+
+    // ── Marchands : bloquer si rejetés ou en attente d'approbation ──
+    if (roleNom === 'restaurateur' || roleNom === 'commercant') {
+      const { data: fullUser } = await db
+        .from('utilisateurs')
+        .select('est_approuve, raison_rejet')
+        .eq('id', session.utilisateur_id)
+        .maybeSingle();
+      if (fullUser?.raison_rejet) {
+        return res.status(403).json({ message: 'Votre compte a été refusé.', raison_rejet: fullUser.raison_rejet });
+      }
+      if (fullUser && !fullUser.est_approuve) {
+        return res.status(403).json({ message: 'Votre compte est en cours de vérification.' });
+      }
+    }
 
     req.auth = {
       sessionId: session.id,
       userId: session.utilisateur_id,
       telephone: user.telephone,
-      role: role ? role.nom : null,
+      role: roleNom,
     };
 
     return next();

@@ -9,9 +9,9 @@ const { getPublicSettings } = require('../services/settings.service');
 const { parseMissingColumn, isMissingColumnError } = require('../utils/supabase-errors');
 
 const USER_SELECT_FULL =
-  'id, nom, telephone, email, mot_de_passe_hash, role_id, est_approuve, est_actif, est_supprime, avatar_url';
+  'id, nom, telephone, email, mot_de_passe_hash, role_id, est_approuve, est_actif, est_supprime, avatar_url, raison_rejet';
 const USER_SELECT_BASE =
-  'id, nom, telephone, email, mot_de_passe_hash, role_id, est_approuve, est_actif, est_supprime';
+  'id, nom, telephone, email, mot_de_passe_hash, role_id, est_approuve, est_actif, est_supprime, raison_rejet';
 
 /** Sélectionne un utilisateur par téléphone en tolérant l'absence de colonne avatar_url. */
 async function selectUserByPhone(db, telephone) {
@@ -643,6 +643,18 @@ async function login(req, res, next) {
 
     if (user.est_actif === false) {
       throw createHttpError(403, 'Ce compte est désactivé.');
+    }
+
+    // ── Marchands (restaurateur / commercant) : bloquer si rejetés ──
+    const { data: roleRow } = await db.from('roles').select('nom').eq('id', user.role_id).maybeSingle();
+    const roleNom = roleRow?.nom;
+    if (roleNom === 'restaurateur' || roleNom === 'commercant') {
+      if (user.raison_rejet) {
+        throw createHttpError(403, `Votre compte a été refusé. Motif : ${user.raison_rejet}`);
+      }
+      if (!user.est_approuve) {
+        throw createHttpError(403, 'Votre compte est en cours de vérification. Vous serez notifié une fois approuvé.');
+      }
     }
 
     const ok = await verifyPasswordAndMaybeUpgrade(db, user, motDePasse);
