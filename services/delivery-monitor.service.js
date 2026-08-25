@@ -127,6 +127,18 @@ async function escalateDelivery(db, liv, newLevel, elapsedMinutes) {
   const courierUserId = await resolveCourierUserId(db, liv.livreur_id);
   const data = { livraison_id: liv.id, action: 'vendor_delivery' };
 
+  // Résoudre l'entreprise logistique du livreur
+  let logisticsManagerId = null;
+  if (liv.livreur_id) {
+    try {
+      const { data: courier } = await db.from('livreurs').select('entreprise_logistique_id').eq('id', liv.livreur_id).maybeSingle();
+      if (courier?.entreprise_logistique_id) {
+        const { data: company } = await db.from('entreprises_logistiques').select('gestionnaire_id').eq('id', courier.entreprise_logistique_id).maybeSingle();
+        logisticsManagerId = company?.gestionnaire_id || null;
+      }
+    } catch { /* swallow */ }
+  }
+
   // Mettre à jour le niveau d'incident
   const patch = { incident_niveau: newLevel, updated_at: new Date().toISOString() };
   if (newLevel && !liv.incident_depuis) patch.incident_depuis = new Date().toISOString();
@@ -174,6 +186,16 @@ async function escalateDelivery(db, liv, newLevel, elapsedMinutes) {
           });
         }
       } catch { /* swallow */ }
+      // Notifier le gestionnaire logistique
+      if (logisticsManagerId) {
+        await notifyUserSafe(db, {
+          utilisateurId: logisticsManagerId,
+          type: 'livraison_retard',
+          titre: '⚠️ Course en retard',
+          corps: `La course \"${destName}\" (${livraisonRef}) est en retard de ${elapsedMinutes} min.`,
+          data: { livraison_id: liv.id, action: 'open_delivery' },
+        });
+      }
       break;
 
     case INCIDENT_INCIDENT:
@@ -208,6 +230,16 @@ async function escalateDelivery(db, liv, newLevel, elapsedMinutes) {
           });
         }
       } catch { /* swallow */ }
+      // Notifier le gestionnaire logistique
+      if (logisticsManagerId) {
+        await notifyUserSafe(db, {
+          utilisateurId: logisticsManagerId,
+          type: 'livraison_incident',
+          titre: '🔴 Incident course',
+          corps: `La course \"${destName}\" (${livraisonRef}) est en incident depuis ${elapsedMinutes} min. Intervention requise.`,
+          data: { livraison_id: liv.id, action: 'open_delivery' },
+        });
+      }
       break;
 
     case INCIDENT_ANOMALIE:
@@ -234,6 +266,16 @@ async function escalateDelivery(db, liv, newLevel, elapsedMinutes) {
           });
         }
       } catch { /* swallow */ }
+      // Notifier le gestionnaire logistique
+      if (logisticsManagerId) {
+        await notifyUserSafe(db, {
+          utilisateurId: logisticsManagerId,
+          type: 'livraison_anomalie',
+          titre: '🚨 Anomalie course',
+          corps: `La course \"${destName}\" (${livraisonRef}) est en anomalie depuis ${elapsedMinutes} min.`,
+          data: { livraison_id: liv.id, action: 'open_delivery' },
+        });
+      }
       break;
 
     case INCIDENT_BLOQUE:
@@ -257,6 +299,16 @@ async function escalateDelivery(db, liv, newLevel, elapsedMinutes) {
           titre: '💀 Livraison bloquée',
           corps: `La livraison pour ${destName} est bloquée depuis ${Math.round(elapsedMinutes / 60)}h. GoLivra prend en charge la résolution.`,
           data,
+        });
+      }
+      // Notifier le gestionnaire logistique
+      if (logisticsManagerId) {
+        await notifyUserSafe(db, {
+          utilisateurId: logisticsManagerId,
+          type: 'livraison_bloquee',
+          titre: '💀 Course bloquée',
+          corps: `La course \"${destName}\" (${livraisonRef}) est bloquée depuis ${Math.round(elapsedMinutes / 60)}h.`,
+          data: { livraison_id: liv.id, action: 'open_delivery' },
         });
       }
       break;
