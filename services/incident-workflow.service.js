@@ -33,6 +33,7 @@
 const { getDb } = require('../config/db');
 const { createHttpError } = require('../utils/http');
 const { notifyUserSafe } = require('./notification.service');
+const { resolveVendorUserId, resolveCourierUserId } = require('../utils/resolve-users');
 
 // ── Statuts de livraison ───────────────────────────────────────────────────
 const DELIVERY_STATUSES = {
@@ -76,29 +77,6 @@ function formatDateFr(iso) {
   } catch { return iso; }
 }
 
-/**
- * Résout l'utilisateur propriétaire d'un commerce.
- */
-async function resolveVendorUserId(db, restaurantId, boutiqueId) {
-  if (restaurantId) {
-    const { data } = await db.from('restaurants').select('proprietaire_id').eq('id', restaurantId).maybeSingle();
-    return data?.proprietaire_id || null;
-  }
-  if (boutiqueId) {
-    const { data } = await db.from('boutiques').select('proprietaire_id').eq('id', boutiqueId).maybeSingle();
-    return data?.proprietaire_id || null;
-  }
-  return null;
-}
-
-/**
- * Résout l'utilisateur livreur.
- */
-async function resolveCourierUserId(db, livreurId) {
-  if (!livreurId) return null;
-  const { data } = await db.from('livreurs').select('utilisateur_id').eq('id', livreurId).maybeSingle();
-  return data?.utilisateur_id || null;
-}
 
 /**
  * Enregistre une action opérateur dans incident_actions (legacy).

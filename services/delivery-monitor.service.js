@@ -14,6 +14,7 @@
  */
 
 const { getDb } = require('../config/db');
+const { resolveVendorUserId, resolveCourierUserId } = require('../utils/resolve-users');
 
 // Intervalles en millisecondes
 const DELAY_30_MIN = 30 * 60 * 1000;
@@ -91,29 +92,6 @@ async function notifyUserSafe(db, { utilisateurId, type, titre, corps, data }) {
   }
 }
 
-/**
- * Résout l'utilisateur propriétaire d'un commerce.
- */
-async function resolveVendorUserId(db, restaurantId, boutiqueId) {
-  if (restaurantId) {
-    const { data } = await db.from('restaurants').select('proprietaire_id').eq('id', restaurantId).maybeSingle();
-    return data?.proprietaire_id || null;
-  }
-  if (boutiqueId) {
-    const { data } = await db.from('boutiques').select('proprietaire_id').eq('id', boutiqueId).maybeSingle();
-    return data?.proprietaire_id || null;
-  }
-  return null;
-}
-
-/**
- * Résout l'utilisateur livreur.
- */
-async function resolveCourierUserId(db, livreurId) {
-  if (!livreurId) return null;
-  const { data } = await db.from('livreurs').select('utilisateur_id').eq('id', livreurId).maybeSingle();
-  return data?.utilisateur_id || null;
-}
 
 /**
  * Met à jour le niveau d'incident et envoie les notifications appropriées.

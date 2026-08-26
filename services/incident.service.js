@@ -20,6 +20,7 @@
 
 const { getDb } = require('../config/db');
 const { createHttpError } = require('../utils/http');
+const { resolveVendorUserId } = require('../utils/resolve-users');
 
 // ── Seuils de retard (en minutes) ──────────────────────────────────────────
 const DELAY_LEVEL_1_MIN = 5;    // Niveau 1 : +5 min
@@ -68,20 +69,7 @@ const OPERATOR_ACTIONS = [
 // ── Statuts actifs ─────────────────────────────────────────────────────────
 const ACTIVE_STATUSES = ['attribuee', 'en_collecte', 'collectee', 'en_route', 'incident', 'reassigning', 'transferring'];
 
-/**
- * Résout l'utilisateur propriétaire d'un commerce.
- */
-async function resolveVendorUserId(db, restaurantId, boutiqueId) {
-  if (restaurantId) {
-    const { data } = await db.from('restaurants').select('proprietaire_id').eq('id', restaurantId).maybeSingle();
-    return data?.proprietaire_id || null;
-  }
-  if (boutiqueId) {
-    const { data } = await db.from('boutiques').select('proprietaire_id').eq('id', boutiqueId).maybeSingle();
-    return data?.proprietaire_id || null;
-  }
-  return null;
-}
+
 
 function minutesSince(isoDate) {
   if (!isoDate) return 0;
