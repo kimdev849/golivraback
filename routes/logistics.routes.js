@@ -97,7 +97,11 @@ router.patch('/incidents/:deliveryId/confirm-transfer', ...gestionnaireActive, a
   try {
     const { deliveryId } = req.params;
     const db = getDb();
-    const result = await incidentWorkflow.confirmTransfer(db, deliveryId, req.auth.userId, req.auth.userId);
+    // Récupérer le livreur actuellement assigné
+    const { data: liv } = await db.from('livraisons').select('livreur_id').eq('id', deliveryId).maybeSingle();
+    const courierId = liv?.livreur_id;
+    if (!courierId) return res.status(400).json({ message: 'Aucun livreur assigné à cette livraison.' });
+    const result = await incidentWorkflow.confirmTransfer(db, deliveryId, courierId, req.auth.userId);
     return res.json(result);
   } catch (error) { return next(error); }
 });

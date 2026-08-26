@@ -940,13 +940,11 @@ async function reportDelayReason(req, res, next) {
     const { deliveryId } = req.params;
     const { reason, detail } = req.body || {};
     if (!reason) throw createHttpError(400, 'Motif requis.');
-    if (!DELAY_REASONS.find((r) => r.key === reason)) {
-      throw createHttpError(400, 'Motif invalide. Valeurs acceptées : ' + DELAY_REASONS.map((r) => r.key).join(', '));
-    }
     const db = getDb();
     const courierId = await getLivreurIdForUser(db, req.auth.userId);
-    const incidentService = require('../services/incident.service');
-    const result = await incidentService.reportDelayReason(db, deliveryId, courierId, reason, detail);
+    // Utiliser le nouveau workflow d'incident (crée l'incident + notifie l'entreprise + client + commerce)
+    const incidentWorkflow = require('../services/incident-workflow.service');
+    const result = await incidentWorkflow.reportProblemFromCourier(db, deliveryId, courierId, reason, detail);
     return res.json(result);
   } catch (error) {
     return next(error);

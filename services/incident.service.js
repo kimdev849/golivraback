@@ -66,7 +66,7 @@ const OPERATOR_ACTIONS = [
 ];
 
 // ── Statuts actifs ─────────────────────────────────────────────────────────
-const ACTIVE_STATUSES = ['attribuee', 'en_collecte', 'collectee', 'en_route'];
+const ACTIVE_STATUSES = ['attribuee', 'en_collecte', 'collectee', 'en_route', 'incident', 'reassigning', 'transferring'];
 
 /**
  * Résout l'utilisateur propriétaire d'un commerce.
@@ -464,12 +464,20 @@ async function listIncidentsForCompany(db, companyId) {
     .in('statut', ACTIVE_STATUSES)
     .order('created_at', { ascending: false });
 
+  const INCIDENT_STATUSES = ['incident', 'reassigning', 'transferring'];
   const incidents = [];
   for (const liv of (livraisons || [])) {
+    const isIncidentStatus = INCIDENT_STATUSES.includes(liv.statut);
     const referenceDate = liv.collectee_at || liv.attribuee_at || liv.created_at;
     const delay = minutesSince(referenceDate);
     const level = computeIncidentLevel(delay);
-    if (!level) continue; // Pas d'incident
+    // Inclure si statut incident OU retard >= 5 min OU incident_niveau déjà défini
+    if (!isIncidentStatus && !level && !liv.incident_niveau) continue;
+
+    // Forcer le niveau d'incident pour les statuts incident workflow
+    if (isIncidentStatus && !liv.incident_niveau) {
+      liv.incident_niveau = 'niveau_2';
+    }
 
     const info = await resolveDeliveryInfo(db, liv);
     incidents.push(info);
@@ -580,12 +588,18 @@ async function resolveIncident(db, deliveryId, resolution, operateurNom) {
   if (!liv) throw createHttpError(404, 'Livraison introuvable.');
 
   const now = new Date().toISOString();
-  const { error: updErr } = await db.from('livraisons').update({
+  // Restaurer le statut actif si la livraison était en 'incident'
+  const statutPatch = {
     incident_niveau: null,
     incident_depuis: null,
     incident_raison: resolution || 'Résolu par opérateur',
     updated_at: now,
-  }).eq('id', deliveryId);
+  };
+  if (liv.statut === 'incident') {
+    // Reprendre le statut d'avant l'incident
+    statutPatch.statut = liv.collectee_at ? 'en_route' : 'en_collecte';
+  }
+  const { error: updErr } = await db.from('livraisons').update(statutPatch).eq('id', deliveryId);
   if (updErr) throw updErr;
 
   await logOperatorAction(db, deliveryId, 'resoudre_incident', operateurNom, resolution);
@@ -688,6 +702,42 @@ async function cancelDelivery(db, deliveryId, raison, operateurNom) {
       });
     }
   } catch { /* swallow */ }
+
+  // Notifier le client (si commande liée)
+  if (liv.sous_commande_id) {
+    try {
+      const { data: sc } = await db.from('sous_commandes').select('commande_id').eq('id', liv.sous_commande_id).maybeSingle();
+      if (sc?.commande_id) {
+        const { data: cmd } = await db.from('commandes').select('client_id, statut').eq('id', sc.commande_id).maybeSingle();
+        if (cmd?.client_id) {
+          await notifyUserSafe(db, {
+            utilisateurId: cmd.client_id,
+            type: 'livraison_annulee',
+            titre: 'Livraison annulee',
+            corps: `${livraisonRef} a ete annulee. ${raison || ''} Contactez le support pour plus d'informations.`,
+            data: { livraison_id: deliveryId, action: 'open_order_tracking' },
+          });
+        }
+      }
+    } catch { /* swallow */ }
+  }
+
+  // Cascade : mettre à jour la sous_commande si applicable
+  if (liv.sous_commande_id) {
+    try {
+      await db.from('sous_commandes').update({ statut: 'annulee', updated_at: now }).eq('id', liv.sous_commande_id);
+      const { data: sc } = await db.from('sous_commandes').select('commande_id').eq('id', liv.sous_commande_id).maybeSingle();
+      if (sc?.commande_id) {
+        // Recalculer le statut de la commande parente
+        const { data: scs } = await db.from('sous_commandes').select('statut').eq('commande_id', sc.commande_id);
+        const statuts = (scs || []).map((s) => s.statut);
+        let nextStatut = 'en_preparation';
+        if (statuts.length > 0 && statuts.every((s) => s === 'annulee' || s === 'refusee' || s === 'remboursee')) nextStatut = 'annulee';
+        else if (statuts.some((s) => s === 'livree')) nextStatut = 'partiellement_livree';
+        await db.from('commandes').update({ statut: nextStatut, updated_at: now }).eq('id', sc.commande_id);
+      }
+    } catch { /* swallow */ }
+  }
 
   return { success: true };
 }

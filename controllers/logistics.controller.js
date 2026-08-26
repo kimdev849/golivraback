@@ -252,8 +252,8 @@ async function resolveMyIncident(req, res, next) {
     const { deliveryId } = req.params;
     const { raison } = req.body || {};
     const db = getDb();
-    const incidentService = require('../services/incident.service');
-    const result = await incidentService.resolveIncident(db, deliveryId, raison, req.auth.userId);
+    const incidentWorkflow = require('../services/incident-workflow.service');
+    const result = await incidentWorkflow.resolveIncidentSimple(db, deliveryId, raison || 'Résolu par opérateur', req.auth.userId);
     return res.json(result);
   } catch (error) {
     return next(error);
@@ -265,8 +265,8 @@ async function cancelMyDelivery(req, res, next) {
     const { deliveryId } = req.params;
     const { raison } = req.body || {};
     const db = getDb();
-    const incidentService = require('../services/incident.service');
-    const result = await incidentService.cancelDelivery(db, deliveryId, raison, req.auth.userId);
+    const incidentWorkflow = require('../services/incident-workflow.service');
+    const result = await incidentWorkflow.cancelDeliveryDefinitive(db, deliveryId, raison, req.auth.userId);
     return res.json(result);
   } catch (error) {
     return next(error);

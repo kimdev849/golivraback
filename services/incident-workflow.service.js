@@ -351,7 +351,7 @@ async function reassignDelivery(db, deliveryId, newCourierId, operateurNom) {
       const oldCourierUserId = await resolveCourierUserId(db, liv.livreur_id);
       if (oldCourierUserId) {
         await notifyUserSafe(db, {
-          utilizationId: oldCourierUserId,
+          utilisateurId: oldCourierUserId,
           type: 'livraison_reassignee',
           titre: '🔄 Livraison réassignée',
           corps: `${livraisonRef} a été réassignée à un autre livreur. Vous êtes libre pour une nouvelle course.`,
@@ -562,11 +562,11 @@ async function reassignCrossCompany(db, deliveryId, newCompanyId, newCourierId, 
     const courierUserId = await resolveCourierUserId(db, newCourierId);
     if (courierUserId) {
       await notifyUserSafe(db, {
-        utilizationId: courierUserId,
+        utilisateurId: courierUserId,
         type: 'livraison_reassignee',
         titre: '📦 Nouvelle course assignée par GoLivra',
         corps: colisRecupere
-          ? `${livraisonRef} : un transfert de colis est nécessaire. Rendez-vous chez le livreur précédent."
+          ? `${livraisonRef} : un transfert de colis est nécessaire. Rendez-vous chez le livreur précédent.`
           : `${livraisonRef} : vous avez été assigné à cette livraison. Récupérez la commande chez le commerce.`,
         data: { livraison_id: deliveryId, action: 'courier_missions' },
       });
