@@ -1,6 +1,7 @@
 const { createHttpError, requireFields } = require('../utils/http');
 const { parseDataUrl } = require('../utils/images');
 const { getSupabaseClient } = require('../services/supabase.service');
+const { addWatermark, shouldWatermark } = require('../utils/watermark');
 
 const ALLOWED_FOLDERS = new Set(['profiles', 'enterprises', 'products', 'campagnes', 'deliveries']);
 
@@ -85,13 +86,19 @@ async function uploadBase64Image(req, res, next) {
       throw createHttpError(400, "Format d'image invalide : le contenu ne correspond pas au type déclaré (jpeg, png, webp).");
     }
 
+    // Ajouter le watermark GoLivra sur les images produits et campagnes
+    let finalBuffer = buffer;
+    if (shouldWatermark(folder)) {
+      finalBuffer = await addWatermark(buffer);
+    }
+
     const bucket = process.env.SUPABASE_STORAGE_BUCKET || 'public';
     const supabase = getSupabaseClient();
     const ownerKey = req.auth?.userId || 'public';
     const fileName = `${Date.now()}-${ownerKey}.${ext}`;
     const objectPath = `${folder}/${fileName}`;
 
-    const { error: uploadError } = await supabase.storage.from(bucket).upload(objectPath, buffer, {
+    const { error: uploadError } = await supabase.storage.from(bucket).upload(objectPath, finalBuffer, {
       contentType,
       upsert: true,
     });
