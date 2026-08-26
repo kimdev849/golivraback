@@ -67,4 +67,48 @@ router.post('/incidents/:deliveryId/note', ...gestionnaireActive, addMyIncidentN
 router.patch('/incidents/:deliveryId/escalate', ...gestionnaireActive, escalateMyIncident);
 router.get('/active-deliveries', ...gestionnaireBase, listMyActiveDeliveries);
 
+// ── Workflow d'incident (nouveau) ──────────────────────────────────────────
+const { getDb } = require('../config/db');
+const incidentWorkflow = require('../services/incident-workflow.service');
+
+router.patch('/incidents/:deliveryId/reassign', ...gestionnaireActive, async (req, res, next) => {
+  try {
+    const { deliveryId } = req.params;
+    const { newCourierId } = req.body || {};
+    if (!newCourierId) return res.status(400).json({ message: 'newCourierId requis.' });
+    const db = getDb();
+    const result = await incidentWorkflow.reassignDelivery(db, deliveryId, newCourierId, req.auth.userId);
+    return res.json(result);
+  } catch (error) { return next(error); }
+});
+
+router.patch('/incidents/:deliveryId/confirm-transfer', ...gestionnaireActive, async (req, res, next) => {
+  try {
+    const { deliveryId } = req.params;
+    const db = getDb();
+    const result = await incidentWorkflow.confirmTransfer(db, deliveryId, req.auth.userId, req.auth.userId);
+    return res.json(result);
+  } catch (error) { return next(error); }
+});
+
+router.patch('/incidents/:deliveryId/cancel-definitive', ...gestionnaireActive, async (req, res, next) => {
+  try {
+    const { deliveryId } = req.params;
+    const { raison } = req.body || {};
+    const db = getDb();
+    const result = await incidentWorkflow.cancelDeliveryDefinitive(db, deliveryId, raison, req.auth.userId);
+    return res.json(result);
+  } catch (error) { return next(error); }
+});
+
+router.patch('/incidents/:deliveryId/resolve-simple', ...gestionnaireActive, async (req, res, next) => {
+  try {
+    const { deliveryId } = req.params;
+    const { resolution } = req.body || {};
+    const db = getDb();
+    const result = await incidentWorkflow.resolveIncidentSimple(db, deliveryId, resolution, req.auth.userId);
+    return res.json(result);
+  } catch (error) { return next(error); }
+});
+
 module.exports = router;
