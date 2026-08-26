@@ -55,6 +55,26 @@ async function listFavorites(db, userId) {
     });
   }
 
+  // Enrichir avec le statut ouvert/fermé LIVE (le snapshot est_ouvert
+  // est souvent figé et ne reflète pas l'état actuel).
+  try {
+    const { getEtablissementOuvertureInfo } = require('./horaires.service');
+    await Promise.all(
+      items.map(async (item) => {
+        try {
+          const info = await getEtablissementOuvertureInfo(db, {
+            kind: item.type,
+            id: item.enterprise_id,
+            prepMinutes: 20,
+          });
+          item.est_ouvert_maintenant = info.ouvert;
+          item.message_fermeture = info.message_fermeture;
+          item.prochaine_ouverture = info.prochaine_ouverture;
+        } catch { /* best-effort */ }
+      }),
+    );
+  } catch { /* service d'horaires indisponible */ }
+
   items.sort((a, b) => String(b.favorited_at || '').localeCompare(String(a.favorited_at || '')));
   return items;
 }
