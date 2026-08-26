@@ -1,6 +1,6 @@
 -- =============================================================================
 -- Workflow d'incident complet
--- Nouveaux statuts de livraison + colonnes pour le transfert physique
+-- Nouveaux statuts de livraison pour le transfert physique
 -- Exécutez dans Supabase SQL Editor (une seule fois)
 --
 -- Nouveaux statuts :
@@ -8,37 +8,49 @@
 --   reassigning  : en attente d'un nouveau livreur (colis pas encore récupéré)
 --   transferring : nouveau livreur assigné, transfert physique en cours
 --
--- Ces statuts coexistent avec les statuts existants :
---   attribuee, en_collecte, collectee, en_route, livree, annulee
+-- La colonne statut est un ENUM PostgreSQL → on utilise ALTER TYPE ADD VALUE
+-- (on ne peut PAS ajouter de CHECK constraint sur un enum)
 -- =============================================================================
 
--- ── Étendre le CHECK constraint du statut si elle existe ────────────────────
--- Supabase/PostgreSQL : on vérifie si la contrainte CHECK existe et on la met à jour
+-- ── Ajouter les nouvelles valeurs à l'enum livraison_statut ──────────────────
+-- On vérifie d'abord si la valeur existe déjà pour éviter l'erreur "value already exists"
 DO $$
-DECLARE
-  con_name text;
 BEGIN
-  -- Trouver la contrainte CHECK sur la colonne 'statut' de livraisons
-  SELECT conname INTO con_name
-  FROM pg_constraint
-  WHERE conrelid = 'livraisons'::regclass
-    AND contype = 'c'
-    AND pg_get_constraintdef(oid) LIKE '%statut%'
-  LIMIT 1;
-
-  IF con_name IS NOT NULL THEN
-    EXECUTE format('ALTER TABLE livraisons DROP CONSTRAINT %I', con_name);
-    RAISE NOTICE 'Ancienne contrainte CHECK supprimée : %', con_name;
+  -- incident
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_enum e
+    JOIN pg_type t ON e.enumtypid = t.oid
+    WHERE t.typname = 'livraison_statut' AND e.enumlabel = 'incident'
+  ) THEN
+    ALTER TYPE livraison_statut ADD VALUE 'incident';
+    RAISE NOTICE 'Valeur ajoutée : incident';
+  ELSE
+    RAISE NOTICE 'Valeur déjà existante : incident';
   END IF;
 
-  -- Recréer avec les nouveaux statuts
-  ALTER TABLE livraisons ADD CONSTRAINT livraisons_statut_check
-    CHECK (statut IN (
-      'en_attente', 'attribuee', 'en_collecte', 'collectee', 'en_route',
-      'livree', 'annulee', 'echec',
-      'incident', 'reassigning', 'transferring'
-    ));
-  RAISE NOTICE 'Contrainte CHECK recréée avec les nouveaux statuts';
+  -- reassigning
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_enum e
+    JOIN pg_type t ON e.enumtypid = t.oid
+    WHERE t.typname = 'livraison_statut' AND e.enumlabel = 'reassigning'
+  ) THEN
+    ALTER TYPE livraison_statut ADD VALUE 'reassigning';
+    RAISE NOTICE 'Valeur ajoutée : reassigning';
+  ELSE
+    RAISE NOTICE 'Valeur déjà existante : reassigning';
+  END IF;
+
+  -- transferring
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_enum e
+    JOIN pg_type t ON e.enumtypid = t.oid
+    WHERE t.typname = 'livraison_statut' AND e.enumlabel = 'transferring'
+  ) THEN
+    ALTER TYPE livraison_statut ADD VALUE 'transferring';
+    RAISE NOTICE 'Valeur ajoutée : transferring';
+  ELSE
+    RAISE NOTICE 'Valeur déjà existante : transferring';
+  END IF;
 END $$;
 
 -- ── Index pour les nouveaux statuts ─────────────────────────────────────────
@@ -46,7 +58,5 @@ CREATE INDEX IF NOT EXISTS idx_livraisons_statut_incident
   ON livraisons (statut)
   WHERE statut IN ('incident', 'reassigning', 'transferring');
 
--- ── Mettre à jour les statuts actifs pour inclure les nouveaux ──────────────
--- ( Ceci est informatif — le code backend gère la liste ACTIVE_STATUSES )
-
+-- Recharge le cache PostgREST après ALTER TYPE (sinon l'API voit encore les anciennes valeurs)
 NOTIFY pgrst, 'reload schema';
