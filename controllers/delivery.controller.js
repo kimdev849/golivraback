@@ -502,6 +502,24 @@ async function getDeliveryDetails(req, res, next) {
           }
         : null,
       distance_km: distanceKm,
+      // ETA réelle si le livreur est en route
+      eta: (() => {
+        if (distanceKm != null && livreurRow && (liv.statut === 'en_route' || liv.statut === 'collectee')) {
+          const { etaFromDistance } = require('../utils/eta');
+          const vehicleType = livreurRow?.type_vehicule || 'moto';
+          const etaMinutes = etaFromDistance(distanceKm, vehicleType);
+          if (etaMinutes != null) {
+            return {
+              distance_km: distanceKm,
+              eta_minutes: etaMinutes,
+              arrivee_estimee_at: new Date(Date.now() + etaMinutes * 60_000).toISOString(),
+              vehicle_type: vehicleType,
+              real_time: true,
+            };
+          }
+        }
+        return null;
+      })(),
       timeline: buildDeliveryTimeline(livraison),
     });
   } catch (error) {
