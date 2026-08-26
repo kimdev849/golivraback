@@ -1076,6 +1076,11 @@ async function mapAdminDeliveryRow(db, liv) {
     en_retard: delay.en_retard,
     type_retard: delay.type_retard,
     minutes_retard: delay.minutes_retard,
+    proof_photo_url: liv.proof_photo_url || null,
+    proof_gps_lat: liv.proof_gps_lat != null ? Number(liv.proof_gps_lat) : null,
+    proof_gps_lng: liv.proof_gps_lng != null ? Number(liv.proof_gps_lng) : null,
+    proof_taken_at: liv.proof_taken_at || null,
+    proof_client_present: liv.proof_client_present ?? null,
   };
 }
 
