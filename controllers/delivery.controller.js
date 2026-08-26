@@ -378,6 +378,7 @@ async function getDeliveryDetails(req, res, next) {
       ? livraison.adresse_collecte_snapshot.texte
       : (typeof livraison.adresse_collecte_snapshot === 'string' ? livraison.adresse_collecte_snapshot : commerce?.adresse_ligne1 || '');
 
+    const { computeRealTimeEta } = require('../utils/eta');
     const distanceKm = (() => {
       if (
         livreurRow?.latitude_actuelle != null &&
@@ -385,16 +386,15 @@ async function getDeliveryDetails(req, res, next) {
         livraison?.latitude_livraison != null &&
         livraison?.longitude_livraison != null
       ) {
-        const R = 6371;
-        const toRad = (d) => (d * Math.PI) / 180;
-        const dLat = toRad(livraison.latitude_livraison - livreurRow.latitude_actuelle);
-        const dLon = toRad(livraison.longitude_livraison - livreurRow.longitude_actuelle);
-        const a =
-          Math.sin(dLat / 2) ** 2 +
-          Math.cos(toRad(livreurRow.latitude_actuelle)) *
-            Math.cos(toRad(livraison.latitude_livraison)) *
-            Math.sin(dLon / 2) ** 2;
-        return Number((R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)) ).toFixed(2));
+        const result = computeRealTimeEta({
+          courierLat: Number(livreurRow.latitude_actuelle),
+          courierLng: Number(livreurRow.longitude_actuelle),
+          deliveryLat: Number(livraison.latitude_livraison),
+          deliveryLng: Number(livraison.longitude_livraison),
+          vehicleType: livreurRow?.type_vehicule || 'moto',
+          courierPositionAt: livreurRow?.derniere_position_at || null,
+        });
+        return result.distanceKm;
       }
       return null;
     })();

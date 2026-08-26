@@ -605,8 +605,7 @@ async function getOrderDetails(req, res, next) {
         note_moyenne: lr?.note_moyenne != null ? Number(lr.note_moyenne) : null,
         position_actuelle: pos,
       };
-      // Distance du livreur → adresse de livraison (coordonnées que le client
-      // a enregistrées avec son adresse — pas de géocodage).
+      // Distance du livreur → adresse de livraison + ETA réelle
       const lat = Number(primaryLivraison.latitude_livraison);
       const lng = Number(primaryLivraison.longitude_livraison);
       if (
@@ -616,9 +615,41 @@ async function getOrderDetails(req, res, next) {
         Number.isFinite(pos.latitude) &&
         Number.isFinite(pos.longitude)
       ) {
-        const { haversineKm } = require('../services/dispatch.service');
-        distanceKm = haversineKm(pos.latitude, pos.longitude, lat, lng);
-        if (Number.isFinite(distanceKm)) distanceKm = Number(distanceKm.toFixed(2));
+        const { computeRealTimeEta } = require('../utils/eta');
+        // Récupérer le type de véhicule du livreur
+        let vehicleType = 'moto';
+        try {
+          const { data: lRow } = await db
+            .from('livreurs')
+            .select('type_vehicule')
+            .eq('id', primaryLivraison.livreur_id)
+            .maybeSingle();
+          if (lRow?.type_vehicule) vehicleType = lRow.type_vehicule;
+        } catch { /* fallback moto */ }
+
+        const realTimeEta = computeRealTimeEta({
+          courierLat: pos.latitude,
+          courierLng: pos.longitude,
+          deliveryLat: lat,
+          deliveryLng: lng,
+          vehicleType,
+          courierPositionAt: lr?.derniere_position_at || null,
+        });
+        distanceKm = realTimeEta.distanceKm;
+        // Si on a une ETA réelle, mettre à jour l'ETA de la commande
+        if (realTimeEta.etaMinutes != null && order?.statut === 'en_livraison') {
+          eta = {
+            ...eta,
+            prepMinutes: 0,
+            deliveryMinutes: realTimeEta.etaMinutes,
+            totalMinutes: realTimeEta.etaMinutes,
+            arriveeEstimeeAt: realTimeEta.arriveeEstimeeAt,
+            tier: null,
+            tierLabel: null,
+            quartierLivraison: quartier,
+            realTime: true,
+          };
+        }
       }
     }
 
