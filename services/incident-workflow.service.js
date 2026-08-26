@@ -101,7 +101,7 @@ async function resolveCourierUserId(db, livreurId) {
 }
 
 /**
- * Enregistre une action opérateur dans incident_actions.
+ * Enregistre une action opérateur dans incident_actions (legacy).
  */
 async function logAction(db, deliveryId, action, operateurNom, details) {
   try {
@@ -110,6 +110,31 @@ async function logAction(db, deliveryId, action, operateurNom, details) {
       action,
       operateur_nom: operateurNom || 'Système',
       details: details || null,
+      created_at: new Date().toISOString(),
+    });
+  } catch { /* swallow - table may not exist */ }
+}
+
+/**
+ * Enregistre un événement dans l'audit log immuable.
+ * Chaque action importante est tracée avec l'acteur, le rôle, les états.
+ */
+async function auditLog(db, payload) {
+  try {
+    await db.from('incident_event_logs').insert({
+      livraison_id: payload.deliveryId,
+      acteur_id: payload.acteurId || null,
+      acteur_role: payload.acteurRole || 'systeme',
+      acteur_nom: payload.acteurNom || 'Système',
+      action: payload.action,
+      action_detail: payload.detail || null,
+      statut_avant: payload.statutAvant || null,
+      statut_apres: payload.statutApres || null,
+      livreur_avant_id: payload.livreurAvantId || null,
+      livreur_apres_id: payload.livreurApresId || null,
+      entreprise_avant_id: payload.entrepriseAvantId || null,
+      entreprise_apres_id: payload.entrepriseApresId || null,
+      metadata: payload.metadata || null,
       created_at: new Date().toISOString(),
     });
   } catch { /* swallow - table may not exist */ }
@@ -153,9 +178,23 @@ async function reportProblemFromCourier(db, deliveryId, courierId, reasonKey, de
     delay_reason_detail: detail ? String(detail).slice(0, 500) : null,
     updated_at: now,
   }).eq('id', deliveryId);
-  if (updErr) throw updErr;
+  if (updErr) throw updErr;  await logAction(db, deliveryId, 'delay_reason_reported', liv.livreur_id, `Motif : ${reason.emoji} ${reason.label}${detail ? ` — ${detail}` : ''}`);
 
-  await logAction(db, deliveryId, 'delay_reason_reported', liv.livreur_id, `Motif : ${reason.emoji} ${reason.label}${detail ? ` — ${detail}` : ''}`);
+  // Audit log
+  await auditLog(db, {
+    deliveryId,
+    acteurId: courierId,
+    acteurRole: 'livreur',
+    acteurNom: liv.livreur_id,
+    action: 'problem_reported',
+    detail: `${reason.emoji} ${reason.label}${detail ? ` — ${detail}` : ''}`,
+    statutAvant: liv.statut,
+    statutApres: DELIVERY_STATUSES.INCIDENT,
+    livreurAvantId: liv.livreur_id,
+    livreurApresId: liv.livreur_id,
+    metadata: { reason_key: reasonKey, severity: reason.severity },
+  });
+
 
   // ── Notifier l'entreprise logistique ────────────────────────────────────
   const livraisonRef = `Livraison #${deliveryId.slice(0, 8)}`;
@@ -274,6 +313,20 @@ async function reassignDelivery(db, deliveryId, newCourierId, operateurNom) {
   await logAction(db, deliveryId, 'reassigner', operateurNom,
     `Nouveau livreur assigné. ${colisRecupere ? 'Transfert physique nécessaire (colis chez l\'ancien livreur).' : 'Colis pas encore récupéré, nouveau livreur en route vers le commerce.'}`);
 
+  // Audit log
+  await auditLog(db, {
+    deliveryId,
+    acteurId: operateurNom,
+    acteurRole: 'gestionnaire',
+    action: 'courier_reassigned',
+    detail: `Ancien livreur → nouveau livreur. ${colisRecupere ? 'Transfert physique nécessaire.' : 'Colis pas encore récupéré.'}`,
+    statutAvant: liv.statut,
+    statutApres: newStatus,
+    livreurAvantId: liv.livreur_id,
+    livreurApresId: newCourierId,
+    metadata: { colis_recupere: colisRecupere },
+  });
+
   const livraisonRef = `Livraison #${deliveryId.slice(0, 8)}`;
 
   // Notifier le nouveau livreur
@@ -383,6 +436,20 @@ async function confirmTransfer(db, deliveryId, newCourierId, operateurNom) {
   if (updErr) throw updErr;
 
   await logAction(db, deliveryId, 'resoudre_incident', operateurNom, 'Transfert physique du colis confirmé. Nouveau livreur en route vers le client.');
+
+  // Audit log
+  await auditLog(db, {
+    deliveryId,
+    acteurId: newCourierId,
+    acteurRole: 'livreur',
+    action: 'transfer_completed',
+    detail: 'Transfert physique du colis confirmé. Nouveau livreur en route vers le client.',
+    statutAvant: DELIVERY_STATUSES.TRANSFERRING,
+    statutApres: DELIVERY_STATUSES.EN_ROUTE,
+    livreurAvantId: liv.livreur_id,
+    livreurApresId: newCourierId,
+    metadata: { transfer_confirmed_by: newCourierId },
+  });
 
   const livraisonRef = `Livraison #${deliveryId.slice(0, 8)}`;
 
@@ -568,6 +635,20 @@ async function cancelDeliveryDefinitive(db, deliveryId, raison, operateurNom) {
   if (updErr) throw updErr;
 
   await logAction(db, deliveryId, 'annuler_livraison', operateurNom, raison);
+
+  // Audit log
+  await auditLog(db, {
+    deliveryId,
+    acteurId: operateurNom,
+    acteurRole: 'gestionnaire',
+    action: 'delivery_cancelled_definitive',
+    detail: raison || 'Annulée définitivement — toutes les solutions épuisées',
+    statutAvant: liv.statut,
+    statutApres: DELIVERY_STATUSES.ANNULEE,
+    livreurAvantId: liv.livreur_id,
+    livreurApresId: null,
+    metadata: { raison, solutions_epuisees: true },
+  });
 
   // 2. Mettre à jour la sous_commande si applicable
   let sousCommandeId = liv.sous_commande_id;
@@ -782,4 +863,5 @@ module.exports = {
   cancelDeliveryDefinitive,
   resolveIncidentSimple,
   recomputeOrderStatus,
+  auditLog,
 };
