@@ -103,7 +103,11 @@ function canBypassModerationCheck(req, row) {
 }
 
 function isPubliclyVisible(row) {
-  return row && row.statut === MODERATION.ACTIVE && row.est_ouvert === true;
+  // Un commerce actif est toujours consultable (même fermé).
+  // Le statut ouvert/fermé est calculé en live par attachHorairesInfo().
+  // Si on exigeait est_ouvert=true ici, les commerces fermés retournent 404
+  // et le client ne peut ni voir la page ni commander quand ils rouvrent.
+  return row && row.statut === MODERATION.ACTIVE;
 }
 
 async function listEnterprises(req, res, next) {
@@ -120,7 +124,6 @@ async function listEnterprises(req, res, next) {
       let q = db
         .from('restaurants')
         .select('*')
-        .eq('est_ouvert', true)
         .eq('statut', MODERATION.ACTIVE)
         .order('nom', { ascending: true });
       if (categorieId) q = q.eq('categorie_id', categorieId);
@@ -139,7 +142,6 @@ async function listEnterprises(req, res, next) {
       let q = db
         .from('boutiques')
         .select('*')
-        .eq('est_ouvert', true)
         .eq('statut', MODERATION.ACTIVE)
         .order('nom', { ascending: true });
       if (categorieId) q = q.eq('categorie_id', categorieId);
@@ -153,6 +155,35 @@ async function listEnterprises(req, res, next) {
       );
       (data || []).forEach((b) => out.push(mapBoutique(b, catMap.get(b.categorie_id) ?? null)));
     }
+
+    // --- Statut d'ouverture live ---
+    // Enrichit chaque commerce avec ses horaires et le statut ouvert/fermé
+    // calculé en temps réel (via nowInBrazzaville). Le champ est_ouvert en
+    // base est un snapshot figé — sans cet enrichissement, les commerces
+    // fermés n'ont aucune info d'ouverture côté client.
+    const { getEtablissementOuvertureInfo } = require('../services/horaires.service');
+    await Promise.all(
+      out.map(async (ent) => {
+        try {
+          const kind = ent.type === 'restaurant' ? 'restaurant' : 'boutique';
+          const prepMin = kind === 'restaurant'
+            ? Number(ent.delai_preparation_min ?? 20)
+            : Number(ent.delai_livraison_min ?? 30);
+          const info = await getEtablissementOuvertureInfo(db, { kind, id: ent.id, prepMinutes: prepMin });
+          ent.horaires = info.horaires;
+          ent.est_ouvert_maintenant = info.ouvert;
+          ent.peut_commander_maintenant = info.peut_commander;
+          ent.fermeture_plage = info.fermeture;
+          ent.message_fermeture = info.message_fermeture;
+          ent.message_commande = info.message_commande;
+          ent.prochaine_ouverture = info.prochaine_ouverture;
+          ent.derniere_commande = info.derniere_commande;
+          // Mettre à jour le snapshot en base pour les prochaines requêtes
+          const tbl = kind === 'restaurant' ? 'restaurants' : 'boutiques';
+          try { await db.from(tbl).update({ est_ouvert: info.ouvert }).eq('id', ent.id); } catch { /* ok */ }
+        } catch { /* best-effort : un échec ne doit pas bloquer la liste */ }
+      }),
+    );
 
     // --- Personnalisation Algorithmique ---
     const userId = req.auth?.userId;
@@ -515,6 +546,13 @@ async function attachHorairesInfo(db, mapped, { kind, id }) {
   mapped.message_fermeture = info.message_fermeture;
   mapped.message_commande = info.message_commande;
   mapped.prochaine_ouverture = info.prochaine_ouverture;
+  // Mettre à jour le snapshot est_ouvert en base pour qu'il reste
+  // cohérent avec les horaires réelles (évite les 404 quand le commerce
+  // est fermé et que le snapshot est encore à true).
+  const entTable = kind === 'restaurant' ? 'restaurants' : 'boutiques';
+  try {
+    await db.from(entTable).update({ est_ouvert: info.ouvert }).eq('id', id);
+  } catch { /* best-effort */ }
 }
 
 /** Trouve un établissement (resto ou boutique) et vérifie la propriété. */
