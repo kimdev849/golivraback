@@ -1,23 +1,27 @@
 /**
  * Incident Workflow Service
  *
- * Gestion complète du cycle de vie d'un incident de livraison :
- *   1. Livreur signale un problème → incident créé + entreprise notifiée
- *   2. Entreprise analyse → contacte le livreur
- *   3. Décision :
- *      a) Résolu (panne réparée, etc.) → livraison reprend
- *      b) Remplacement nécessaire → réattribution + transfert physique du colis
- *      c) Impossible → annulation définitive + remboursement éligible
- *   4. Client/boutique notifié à chaque étape importante
+ * Gestion complète du cycle de vie d'un incident de livraison.
+ *
+ * Chaîne de fallback (du meilleur au dernier recours) :
+ *   1. Le problème est résolu → le livreur original continue
+ *   2. Autre livreur de la MÊME entreprise → transfert interne
+ *   3. Autre entreprise PARTenaire GoLivra → transfert cross-company
+ *   4. Aucune solution → annulation définitive → remboursement éligible
+ *
+ * Principe :
+ *   - Problème d'un livreur ≠ remboursement
+ *   - Problème d'une entreprise ≠ remboursement
+ *   - Seul l'échec de TOUTES les solutions → annulation → remboursement éventuel
  *
  * Statuts de livraison :
  *   attribuee → en_collecte → collectee → en_route → livree
  *                                              ↓
- *                                          incident (nouveau)
+ *                                          incident
  *                                              ↓
- *                                         reassigning (nouveau)
+ *                                         reassigning (même entreprise)
  *                                              ↓
- *                                         transferring (nouveau)
+ *                                         transferring (transfert physique)
  *                                              ↓
  *                                         en_route (reprise)
  *                                              ↓
@@ -418,15 +422,128 @@ async function confirmTransfer(db, deliveryId, newCourierId, operateurNom) {
 
 
 // ════════════════════════════════════════════════════════════════════════════
-// 4. ANNULATION DÉFINITIVE (avec cascade sous_commande → commande)
+// 4. RÉATTRIBUTION CROSS-COMPANY (GoLivra assigne à une autre entreprise)
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * GoLivra réattribue la livraison à une autre entreprise partenaire.
+ * → L'entreprise A ne peut plus gérer
+ * → GoLivra cherche une entreprise B avec des livreurs disponibles
+ * → B accepte la mission → transfert physique du colis
+ * → Pas de remboursement (la livraison continue)
+ */
+async function reassignCrossCompany(db, deliveryId, newCompanyId, newCourierId, operateurNom) {
+  const { data: liv, error } = await db
+    .from('livraisons')
+    .select('*')
+    .eq('id', deliveryId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!liv) throw createHttpError(404, 'Livraison introuvable.');
+
+  const now = new Date().toISOString();
+  const colisRecupere = !!liv.collectee_at;
+  const oldCompanyId = liv.entreprise_logistique_id;
+
+  // Mettre à jour la livraison : nouvelle entreprise + nouveau livreur
+  const patch = {
+    entreprise_logistique_id: newCompanyId,
+    livreur_id: newCourierId,
+    statut: colisRecupere ? DELIVERY_STATUSES.TRANSFERRING : DELIVERY_STATUSES.REASSIGNING,
+    updated_at: now,
+  };
+  const { error: updErr } = await db.from('livraisons').update(patch).eq('id', deliveryId);
+  if (updErr) throw updErr;
+
+  await logAction(db, deliveryId, 'reassigner', operateurNom,
+    `Réattribution cross-company : entreprise ${newCompanyId.slice(0, 8)}. ${colisRecupere ? 'Transfert physique nécessaire.' : 'Colis pas encore récupéré.'}`);
+
+  const livraisonRef = `Livraison #${deliveryId.slice(0, 8)}`;
+
+  // Notifier l'ancienne entreprise (elle est libérée)
+  if (oldCompanyId) {
+    try {
+      const { data: oldCompany } = await db.from('entreprises_logistiques').select('gestionnaire_id').eq('id', oldCompanyId).maybeSingle();
+      if (oldCompany?.gestionnaire_id) {
+        await notifyUserSafe(db, {
+          utilisateurId: oldCompany.gestionnaire_id,
+          type: 'livraison_reassignee',
+          titre: '🔄 Livraison réattribuée à une autre entreprise',
+          corps: `${livraisonRef} a été réattribuée à une autre entreprise logistique. Vous êtes libéré de cette course.`,
+          data: { livraison_id: deliveryId, action: 'courier_missions' },
+        });
+      }
+    } catch { /* swallow */ }
+  }
+
+  // Notifier la nouvelle entreprise
+  try {
+    const { data: newCompany } = await db.from('entreprises_logistiques').select('gestionnaire_id').eq('id', newCompanyId).maybeSingle();
+    if (newCompany?.gestionnaire_id) {
+      await notifyUserSafe(db, {
+        utilisateurId: newCompany.gestionnaire_id,
+        type: 'livraison_reassignee',
+        titre: '📦 Nouvelle livraison assignée par GoLivra',
+        corps: `${livraisonRef} : GoLivra vous a assigné cette livraison. ${colisRecupere ? 'Un transfert de colis est nécessaire.' : 'Récupérez la commande chez le commerce.'}`,
+        data: { livraison_id: deliveryId, action: 'vendor_delivery' },
+      });
+    }
+  } catch { /* swallow */ }
+
+  // Notifier le nouveau livreur
+  try {
+    const courierUserId = await resolveCourierUserId(db, newCourierId);
+    if (courierUserId) {
+      await notifyUserSafe(db, {
+        utilizationId: courierUserId,
+        type: 'livraison_reassignee',
+        titre: '📦 Nouvelle course assignée par GoLivra',
+        corps: colisRecupere
+          ? `${livraisonRef} : un transfert de colis est nécessaire. Rendez-vous chez le livreur précédent."
+          : `${livraisonRef} : vous avez été assigné à cette livraison. Récupérez la commande chez le commerce.`,
+        data: { livraison_id: deliveryId, action: 'courier_missions' },
+      });
+    }
+  } catch { /* swallow */ }
+
+  // Notifier le client
+  if (liv.sous_commande_id) {
+    try {
+      const { data: sc } = await db.from('sous_commandes').select('commande_id').eq('id', liv.sous_commande_id).maybeSingle();
+      if (sc?.commande_id) {
+        const { data: cmd } = await db.from('commandes').select('client_id').eq('id', sc.commande_id).maybeSingle();
+        if (cmd?.client_id) {
+          await notifyUserSafe(db, {
+            utilisateurId: cmd.client_id,
+            type: 'livraison_reassignee',
+            titre: '🚚 Un nouveau livreur prend en charge votre livraison',
+            corps: 'Une nouvelle entreprise de livraison a été assignée. Votre livraison continue. Un léger retard supplémentaire est possible.',
+            data: { livraison_id: deliveryId, action: 'open_order_tracking' },
+          });
+        }
+      }
+    } catch { /* swallow */ }
+  }
+
+  return { success: true, status: patch.statut, cross_company: true };
+}
+
+
+// ════════════════════════════════════════════════════════════════════════════
+// 5. ANNULATION DÉFINITIVE (dernier recours — TOUTES les solutions épuisées)
 // ════════════════════════════════════════════════════════════════════════════
 
 /**
  * Annulation définitive d'une livraison.
+ * ⚠️ Cette fonction ne doit être appelée QUE si :
+ *   - Le problème n'est pas résolu au niveau du livreur
+ *   - Aucun autre livreur de la même entreprise n'est disponible
+ *   - Aucune autre entreprise partenaire ne peut reprendre
+ *
  * → Met à jour sous_commande si applicable
  * → Recalcule le statut de la commande parente
  * → Notifie toutes les parties
- * → Déclenche le remboursement si éligible (client payé, livraison impossible)
+ * → Vérifie l'éligibilité au remboursement (pas de remboursement automatique)
  */
 async function cancelDeliveryDefinitive(db, deliveryId, raison, operateurNom) {
   const { data: liv, error } = await db
@@ -660,6 +777,7 @@ module.exports = {
   PROBLEM_REASONS,
   reportProblemFromCourier,
   reassignDelivery,
+  reassignCrossCompany,
   confirmTransfer,
   cancelDeliveryDefinitive,
   resolveIncidentSimple,

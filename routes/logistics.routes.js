@@ -82,6 +82,17 @@ router.patch('/incidents/:deliveryId/reassign', ...gestionnaireActive, async (re
   } catch (error) { return next(error); }
 });
 
+router.patch('/incidents/:deliveryId/reassign-cross-company', ...gestionnaireActive, async (req, res, next) => {
+  try {
+    const { deliveryId } = req.params;
+    const { newCompanyId, newCourierId } = req.body || {};
+    if (!newCompanyId || !newCourierId) return res.status(400).json({ message: 'newCompanyId et newCourierId requis.' });
+    const db = getDb();
+    const result = await incidentWorkflow.reassignCrossCompany(db, deliveryId, newCompanyId, newCourierId, req.auth.userId);
+    return res.json(result);
+  } catch (error) { return next(error); }
+});
+
 router.patch('/incidents/:deliveryId/confirm-transfer', ...gestionnaireActive, async (req, res, next) => {
   try {
     const { deliveryId } = req.params;
