@@ -552,6 +552,7 @@ async function logOperatorAction(db, deliveryId, action, operateurNom, details) 
 
 /**
  * Résout un incident (appelé par l'admin/gestionnaire).
+ * Notifie toutes les parties.
  */
 async function resolveIncident(db, deliveryId, resolution, operateurNom) {
   const { data: liv, error } = await db
@@ -572,13 +573,55 @@ async function resolveIncident(db, deliveryId, resolution, operateurNom) {
 
   await logOperatorAction(db, deliveryId, 'resoudre_incident', operateurNom, resolution);
 
+  // Notifier les parties concernees
+  const { notifyUserSafe } = require('./notification.service');
+  const livraisonRef = `Livraison #${deliveryId.slice(0, 8)}`;
+  const data = { livraison_id: deliveryId, action: 'vendor_delivery' };
+
+  // Notifier le livreur
+  if (liv.livreur_id) {
+    try {
+      const { data: lr } = await db.from('livreurs').select('utilisateur_id').eq('id', liv.livreur_id).maybeSingle();
+      if (lr?.utilisateur_id) {
+        await notifyUserSafe(db, {
+          utilisateurId: lr.utilisateur_id,
+          type: 'livraison_incident_resolu',
+          titre: 'Incident resolu',
+          corps: `${livraisonRef} : l'incident est resolu. La livraison continue normalement.`,
+          data: { livraison_id: deliveryId, action: 'courier_missions' },
+        });
+      }
+    } catch { /* swallow */ }
+  }
+
+  // Notifier le commerce
+  const vendorUserId = await resolveVendorUserId(db, liv.restaurant_id, liv.boutique_id);
+  if (vendorUserId) {
+    await notifyUserSafe(db, {
+      utilisateurId: vendorUserId,
+      type: 'livraison_incident_resolu',
+      titre: 'Incident resolu',
+      corps: `${livraisonRef} : l'incident est resolu. La livraison continue.`,
+      data,
+    });
+  }
+
   return { success: true };
 }
 
 /**
  * Annule une livraison (appelé par l'admin/gestionnaire).
+ * Libere le livreur et notifie toutes les parties.
  */
 async function cancelDelivery(db, deliveryId, raison, operateurNom) {
+  const { data: liv, error } = await db
+    .from('livraisons')
+    .select('*')
+    .eq('id', deliveryId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!liv) throw createHttpError(404, 'Livraison introuvable.');
+
   const now = new Date().toISOString();
   await db.from('livraisons').update({
     statut: 'annulee',
@@ -590,6 +633,39 @@ async function cancelDelivery(db, deliveryId, raison, operateurNom) {
   }).eq('id', deliveryId);
 
   await logOperatorAction(db, deliveryId, 'annuler_livraison', operateurNom, raison);
+
+  // Notifier toutes les parties
+  const { notifyUserSafe } = require('./notification.service');
+  const livraisonRef = `Livraison #${deliveryId.slice(0, 8)}`;
+  const data = { livraison_id: deliveryId };
+
+  // Notifier le livreur (il est libere)
+  if (liv.livreur_id) {
+    try {
+      const { data: lr } = await db.from('livreurs').select('utilisateur_id').eq('id', liv.livreur_id).maybeSingle();
+      if (lr?.utilisateur_id) {
+        await notifyUserSafe(db, {
+          utilisateurId: lr.utilisateur_id,
+          type: 'livraison_annulee',
+          titre: 'Livraison annulee',
+          corps: `${livraisonRef} a ete annulee. Vous etes libre pour une nouvelle course.`,
+          data: { livraison_id: deliveryId, action: 'courier_missions' },
+        });
+      }
+    } catch { /* swallow */ }
+  }
+
+  // Notifier le commerce
+  const vendorUserId = await resolveVendorUserId(db, liv.restaurant_id, liv.boutique_id);
+  if (vendorUserId) {
+    await notifyUserSafe(db, {
+      utilisateurId: vendorUserId,
+      type: 'livraison_annulee',
+      titre: 'Livraison annulee',
+      corps: `${livraisonRef} a ete annulee. Raison : ${raison || 'Non precisee'}.`,
+      data: { ...data, action: 'vendor_delivery' },
+    });
+  }
 
   return { success: true };
 }
@@ -603,7 +679,7 @@ async function addIncidentNote(db, deliveryId, note, operateurNom) {
 }
 
 /**
- * Escalade un incident (passe au niveau supérieur).
+ * Escalade un incident vers GoLivra (passe au niveau supérieur + notifie les admins).
  */
 async function escalateIncident(db, deliveryId, operateurNom) {
   const { data: liv, error } = await db
@@ -624,7 +700,23 @@ async function escalateIncident(db, deliveryId, operateurNom) {
     updated_at: now,
   }).eq('id', deliveryId);
 
-  await logOperatorAction(db, deliveryId, 'escalader', operateurNom, `Escalade de ${currentLevel} vers ${nextLevel}`);
+  await logOperatorAction(db, deliveryId, 'escalader', operateurNom, `Escalade de ${currentLevel} vers ${nextLevel} — Situation remontee a GoLivra`);
+
+  // Notifier les admins GoLivra
+  const { notifyUserSafe } = require('./notification.service');
+  const livraisonRef = `Livraison #${deliveryId.slice(0, 8)}`;
+  try {
+    const { data: admins } = await db.from('utilisateurs').select('id').eq('role', 'admin').eq('est_actif', true);
+    for (const admin of (admins || [])) {
+      await notifyUserSafe(db, {
+        utilisateurId: admin.id,
+        type: 'livraison_incident_admin',
+        titre: 'Incident eskale vers GoLivra',
+        corps: `${livraisonRef} : l'entreprise a eskale la situation. Niveau ${nextLevel}. Intervention requise.`,
+        data: { livraison_id: deliveryId, action: 'open_delivery' },
+      });
+    }
+  } catch { /* swallow */ }
 
   return { success: true, new_level: nextLevel };
 }
