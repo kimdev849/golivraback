@@ -175,16 +175,13 @@ async function escalateDelivery(db, liv, newLevel, elapsedMinutes) {
         });
       }
       try {
-        const { data: admins } = await db.from('utilisateurs').select('id').eq('role', 'admin').eq('est_actif', true);
-        for (const admin of (admins || [])) {
-          await notifyUserSafe(db, {
-            utilisateurId: admin.id,
-            type: 'livraison_retard_admin',
-            titre: '⚠️ Retard de livraison',
-            corps: `${livraisonRef} pour ${destName} — ${elapsedMinutes} min de retard. Surveiller.`,
-            data,
-          });
-        }
+        const { notifyAllAdmins } = require('./admin-notify.service');
+        await notifyAllAdmins(db, {
+          type: 'livraison_retard_admin',
+          titre: '⚠️ Retard de livraison',
+          corps: `${livraisonRef} pour ${destName} — ${elapsedMinutes} min de retard. Surveiller.`,
+          data,
+        });
       } catch { /* swallow */ }
       // Notifier le gestionnaire logistique
       if (logisticsManagerId) {
@@ -219,16 +216,13 @@ async function escalateDelivery(db, liv, newLevel, elapsedMinutes) {
         });
       }
       try {
-        const { data: admins } = await db.from('utilisateurs').select('id').eq('role', 'admin').eq('est_actif', true);
-        for (const admin of (admins || [])) {
-          await notifyUserSafe(db, {
-            utilisateurId: admin.id,
-            type: 'livraison_incident_admin',
-            titre: '🔴 Incident livraison',
-            corps: `${livraisonRef} pour ${destName} — ${elapsedMinutes} min sans progression. Intervention recommandée.`,
-            data,
-          });
-        }
+        const { notifyAllAdmins } = require('./admin-notify.service');
+        await notifyAllAdmins(db, {
+          type: 'livraison_incident_admin',
+          titre: '🔴 Incident livraison',
+          corps: `${livraisonRef} pour ${destName} — ${elapsedMinutes} min sans progression. Intervention recommandée.`,
+          data,
+        });
       } catch { /* swallow */ }
       // Notifier le gestionnaire logistique
       if (logisticsManagerId) {
@@ -255,16 +249,13 @@ async function escalateDelivery(db, liv, newLevel, elapsedMinutes) {
       }
       // Notifier aussi les admins
       try {
-        const { data: admins } = await db.from('utilisateurs').select('id').eq('role', 'admin').eq('est_actif', true);
-        for (const admin of (admins || [])) {
-          await notifyUserSafe(db, {
-            utilisateurId: admin.id,
-            type: 'livraison_anomalie_admin',
-            titre: '🚨 Anomalie livraison',
-            corps: `${livraisonRef} pour ${destName} — ${elapsedMinutes} min sans progression. Intervention requise.`,
-            data,
-          });
-        }
+        const { notifyAllAdmins } = require('./admin-notify.service');
+        await notifyAllAdmins(db, {
+          type: 'livraison_anomalie_admin',
+          titre: '🚨 Anomalie livraison',
+          corps: `${livraisonRef} pour ${destName} — ${elapsedMinutes} min sans progression. Intervention requise.`,
+          data,
+        });
       } catch { /* swallow */ }
       // Notifier le gestionnaire logistique
       if (logisticsManagerId) {
@@ -281,16 +272,13 @@ async function escalateDelivery(db, liv, newLevel, elapsedMinutes) {
     case INCIDENT_BLOQUE:
       // 24 h → bloquée, intervention admin obligatoire
       try {
-        const { data: admins } = await db.from('utilisateurs').select('id').eq('role', 'admin').eq('est_actif', true);
-        for (const admin of (admins || [])) {
-          await notifyUserSafe(db, {
-            utilisateurId: admin.id,
-            type: 'livraison_bloquee',
-            titre: '💀 Livraison bloquée',
-            corps: `${livraisonRef} pour ${destName} — bloquée depuis ${Math.round(elapsedMinutes / 60)}h. Intervention admin obligatoire.`,
-            data,
-          });
-        }
+        const { notifyAllAdmins } = require('./admin-notify.service');
+        await notifyAllAdmins(db, {
+          type: 'livraison_bloquee',
+          titre: '💀 Livraison bloquée',
+          corps: `${livraisonRef} pour ${destName} — bloquée depuis ${Math.round(elapsedMinutes / 60)}h. Intervention admin obligatoire.`,
+          data,
+        });
       } catch { /* swallow */ }
       if (vendorUserId) {
         await notifyUserSafe(db, {
@@ -380,18 +368,15 @@ async function monitorActiveDeliveries() {
           const waitMin = minutesSince(liv.created_at);
           if (waitMin >= LONG_WAIT_MINUTES) {
             try {
-              const { data: admins } = await db.from('utilisateurs').select('id').eq('role', 'admin').eq('est_actif', true);
+              const { notifyAllAdmins } = require('./admin-notify.service');
               const ref = `Livraison #${liv.id.slice(0, 8)}`;
               const client = liv.client_nom || 'client';
-              for (const admin of (admins || [])) {
-                await notifyUserSafe(db, {
-                  utilisateurId: admin.id,
-                  type: 'livraison_sans_livreur',
-                  titre: '⚠️ Livraison sans livreur',
-                  corps: `${ref} pour ${client} attend un livreur depuis ${waitMin} min. Aucun livreur disponible.`,
-                  data: { livraison_id: liv.id, action: 'open_delivery' },
-                });
-              }
+              await notifyAllAdmins(db, {
+                type: 'livraison_sans_livreur',
+                titre: '⚠️ Livraison sans livreur',
+                corps: `${ref} pour ${client} attend un livreur depuis ${waitMin} min. Aucun livreur disponible.`,
+                data: { livraison_id: liv.id, action: 'open_delivery' },
+              });
             } catch { /* swallow */ }
           }
         }
