@@ -162,11 +162,32 @@ async function resolveDeliveryInfo(db, livraison) {
     incident_reason: null,
     last_activity_ago: null,
 
+    // Physical custody of the package
+    colis_recupere: false,
+    colis_recupere_at: null,
+    colis_detenteur: null, // 'livreur' | null
+    colis_peut_etre_reattribue: true, // false if picked up
+    colis_necessite_transfert: false, // true if picked up + incident
+
+    // Delay detail
+    delai_prevu_minutes: null,
+    delai_prevu_at: null,
+
     // Timeline
     timeline: [],
     // Operator actions history
     operator_actions: [],
   };
+
+  // ── Colis : statut physique ──────────────────────────────────────────────
+  const colisRecupere = !!(livraison.collectee_at);
+  result.colis_recupere = colisRecupere;
+  result.colis_recupere_at = livraison.collectee_at || null;
+  result.colis_peut_etre_reattribue = !colisRecupere;
+  result.colis_necessite_transfert = colisRecupere && !!livraison.incident_niveau;
+  if (colisRecupere && livraison.livreur_id) {
+    result.colis_detenteur = 'livreur';
+  }
 
   // ── Résoudre livreur ─────────────────────────────────────────────────────
   if (livraison.livreur_id) {
