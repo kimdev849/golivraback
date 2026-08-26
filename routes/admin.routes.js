@@ -141,4 +141,8 @@ router.post('/locations/arrondissements', ...adminOnly, locationAdmin.postArrond
 router.patch('/locations/arrondissements/:arrId', ...adminOnly, locationAdmin.patchArrondissement);
 router.delete('/locations/arrondissements/:arrId', ...adminOnly, locationAdmin.removeArrondissement);
 
+// ── Watermark migration ──
+const { runWatermarkMigration } = require('../controllers/watermark.controller');
+router.get('/watermark-migration', ...adminOnly, runWatermarkMigration);
+
 module.exports = router;
