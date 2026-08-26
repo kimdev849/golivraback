@@ -68,6 +68,21 @@ const OPERATOR_ACTIONS = [
 // ── Statuts actifs ─────────────────────────────────────────────────────────
 const ACTIVE_STATUSES = ['attribuee', 'en_collecte', 'collectee', 'en_route'];
 
+/**
+ * Résout l'utilisateur propriétaire d'un commerce.
+ */
+async function resolveVendorUserId(db, restaurantId, boutiqueId) {
+  if (restaurantId) {
+    const { data } = await db.from('restaurants').select('proprietaire_id').eq('id', restaurantId).maybeSingle();
+    return data?.proprietaire_id || null;
+  }
+  if (boutiqueId) {
+    const { data } = await db.from('boutiques').select('proprietaire_id').eq('id', boutiqueId).maybeSingle();
+    return data?.proprietaire_id || null;
+  }
+  return null;
+}
+
 function minutesSince(isoDate) {
   if (!isoDate) return 0;
   return Math.max(0, Math.floor((Date.now() - new Date(isoDate).getTime()) / 60000));
@@ -523,7 +538,8 @@ async function reportDelayReason(db, deliveryId, livreurId, reasonKey, detail) {
     updated_at: now,
   };
 
-  await db.from('livraisons').update(patch).eq('id', deliveryId);
+  const { error: updErr } = await db.from('livraisons').update(patch).eq('id', deliveryId);
+  if (updErr) throw updErr;
 
   // Log action
   try {
@@ -564,12 +580,13 @@ async function resolveIncident(db, deliveryId, resolution, operateurNom) {
   if (!liv) throw createHttpError(404, 'Livraison introuvable.');
 
   const now = new Date().toISOString();
-  await db.from('livraisons').update({
+  const { error: updErr } = await db.from('livraisons').update({
     incident_niveau: null,
     incident_depuis: null,
     incident_raison: resolution || 'Résolu par opérateur',
     updated_at: now,
   }).eq('id', deliveryId);
+  if (updErr) throw updErr;
 
   await logOperatorAction(db, deliveryId, 'resoudre_incident', operateurNom, resolution);
 
@@ -595,16 +612,18 @@ async function resolveIncident(db, deliveryId, resolution, operateurNom) {
   }
 
   // Notifier le commerce
-  const vendorUserId = await resolveVendorUserId(db, liv.restaurant_id, liv.boutique_id);
-  if (vendorUserId) {
-    await notifyUserSafe(db, {
-      utilisateurId: vendorUserId,
-      type: 'livraison_incident_resolu',
-      titre: 'Incident resolu',
-      corps: `${livraisonRef} : l'incident est resolu. La livraison continue.`,
-      data,
-    });
-  }
+  try {
+    const vendorUserId = await resolveVendorUserId(db, liv.restaurant_id, liv.boutique_id);
+    if (vendorUserId) {
+      await notifyUserSafe(db, {
+        utilisateurId: vendorUserId,
+        type: 'livraison_incident_resolu',
+        titre: 'Incident resolu',
+        corps: `${livraisonRef} : l'incident est resolu. La livraison continue.`,
+        data,
+      });
+    }
+  } catch { /* swallow */ }
 
   return { success: true };
 }
@@ -623,7 +642,7 @@ async function cancelDelivery(db, deliveryId, raison, operateurNom) {
   if (!liv) throw createHttpError(404, 'Livraison introuvable.');
 
   const now = new Date().toISOString();
-  await db.from('livraisons').update({
+  const { error: updErr } = await db.from('livraisons').update({
     statut: 'annulee',
     annulee_at: now,
     incident_niveau: null,
@@ -631,6 +650,7 @@ async function cancelDelivery(db, deliveryId, raison, operateurNom) {
     incident_raison: raison || 'Annulée par opérateur',
     updated_at: now,
   }).eq('id', deliveryId);
+  if (updErr) throw updErr;
 
   await logOperatorAction(db, deliveryId, 'annuler_livraison', operateurNom, raison);
 
@@ -656,16 +676,18 @@ async function cancelDelivery(db, deliveryId, raison, operateurNom) {
   }
 
   // Notifier le commerce
-  const vendorUserId = await resolveVendorUserId(db, liv.restaurant_id, liv.boutique_id);
-  if (vendorUserId) {
-    await notifyUserSafe(db, {
-      utilisateurId: vendorUserId,
-      type: 'livraison_annulee',
-      titre: 'Livraison annulee',
-      corps: `${livraisonRef} a ete annulee. Raison : ${raison || 'Non precisee'}.`,
-      data: { ...data, action: 'vendor_delivery' },
-    });
-  }
+  try {
+    const vendorUserId = await resolveVendorUserId(db, liv.restaurant_id, liv.boutique_id);
+    if (vendorUserId) {
+      await notifyUserSafe(db, {
+        utilisateurId: vendorUserId,
+        type: 'livraison_annulee',
+        titre: 'Livraison annulee',
+        corps: `${livraisonRef} a ete annulee. Raison : ${raison || 'Non precisee'}.`,
+        data: { ...data, action: 'vendor_delivery' },
+      });
+    }
+  } catch { /* swallow */ }
 
   return { success: true };
 }
@@ -694,11 +716,12 @@ async function escalateIncident(db, deliveryId, operateurNom) {
   const currentLevel = liv.incident_niveau || 'niveau_1';
   const nextLevel = currentLevel === 'niveau_1' ? 'niveau_2' : currentLevel === 'niveau_2' ? 'niveau_3' : 'niveau_3';
 
-  await db.from('livraisons').update({
+  const { error: updErr } = await db.from('livraisons').update({
     incident_niveau: nextLevel,
     incident_depuis: liv.incident_depuis || now,
     updated_at: now,
   }).eq('id', deliveryId);
+  if (updErr) throw updErr;
 
   await logOperatorAction(db, deliveryId, 'escalader', operateurNom, `Escalade de ${currentLevel} vers ${nextLevel} — Situation remontee a GoLivra`);
 
@@ -706,15 +729,19 @@ async function escalateIncident(db, deliveryId, operateurNom) {
   const { notifyUserSafe } = require('./notification.service');
   const livraisonRef = `Livraison #${deliveryId.slice(0, 8)}`;
   try {
-    const { data: admins } = await db.from('utilisateurs').select('id').eq('role', 'admin').eq('est_actif', true);
-    for (const admin of (admins || [])) {
-      await notifyUserSafe(db, {
-        utilisateurId: admin.id,
-        type: 'livraison_incident_admin',
-        titre: 'Incident eskale vers GoLivra',
-        corps: `${livraisonRef} : l'entreprise a eskale la situation. Niveau ${nextLevel}. Intervention requise.`,
-        data: { livraison_id: deliveryId, action: 'open_delivery' },
-      });
+    // Trouver le role_id pour 'admin'
+    const { data: adminRole } = await db.from('roles').select('id').eq('nom', 'admin').maybeSingle();
+    if (adminRole) {
+      const { data: admins } = await db.from('utilisateurs').select('id').eq('role_id', adminRole.id).eq('est_actif', true);
+      for (const admin of (admins || [])) {
+        await notifyUserSafe(db, {
+          utilisateurId: admin.id,
+          type: 'livraison_incident_admin',
+          titre: 'Incident eskale vers GoLivra',
+          corps: `${livraisonRef} : l'entreprise a eskale la situation. Niveau ${nextLevel}. Intervention requise.`,
+          data: { livraison_id: deliveryId, action: 'open_delivery' },
+        });
+      }
     }
   } catch { /* swallow */ }
 
