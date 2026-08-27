@@ -14,37 +14,36 @@ const path = require('path');
  * @returns {Promise<Buffer>} Buffer de l'image avec watermark
  */
 async function addWatermark(inputBuffer, options = {}) {
-  const { opacity = 0.35, fontSize = 24 } = options;
-
   try {
     const image = sharp(inputBuffer);
     const metadata = await image.metadata();
     const width = metadata.width || 800;
     const height = metadata.height || 600;
 
-    // Taille du watermark proportionnelle à l'image
-    const wmFontSize = Math.max(14, Math.min(fontSize, Math.round(width / 20)));
+    // Taille du watermark proportionnelle à l'image (min 18px, max ~40px)
+    const wmFontSize = Math.max(18, Math.min(40, Math.round(width / 18)));
     const wmText = 'GoLivra';
 
     // Créer le SVG du watermark
-    const textWidth = wmText.length * wmFontSize * 0.6;
-    const padding = 8;
-    const boxWidth = textWidth + padding * 2;
-    const boxHeight = wmFontSize + padding * 2;
+    const textWidth = wmText.length * wmFontSize * 0.62;
+    const paddingX = 10;
+    const paddingY = 6;
+    const boxWidth = textWidth + paddingX * 2;
+    const boxHeight = wmFontSize + paddingY * 2;
 
     const svgWatermark = Buffer.from(`
       <svg width="${boxWidth}" height="${boxHeight}" xmlns="http://www.w3.org/2000/svg">
         <rect x="0" y="0" width="${boxWidth}" height="${boxHeight}"
-              rx="4" ry="4" fill="rgba(0,0,0,0.55)" />
-        <text x="${padding}" y="${wmFontSize + padding - 4}"
+              rx="6" ry="6" fill="rgba(0,0,0,0.6)" />
+        <text x="${paddingX}" y="${wmFontSize + paddingY - 3}"
               font-family="Arial, Helvetica, sans-serif"
               font-size="${wmFontSize}" font-weight="bold" font-style="italic"
-              fill="white" opacity="0.9">${wmText}</text>
+              fill="white">${wmText}</text>
       </svg>
     `);
 
-    // Position : coin bas-droit avec une marge
-    const margin = Math.max(8, Math.round(width / 50));
+    // Position : coin bas-droit avec marge
+    const margin = Math.max(12, Math.round(width / 40));
     const left = width - boxWidth - margin;
     const top = height - boxHeight - margin;
 
@@ -56,6 +55,7 @@ async function addWatermark(inputBuffer, options = {}) {
       }])
       .toBuffer();
 
+    console.log(`[watermark] ✅ Watermark appliqué (${width}x${height}, font=${wmFontSize}px)`);
     return watermarked;
     } catch (err) {
     // En cas d'erreur, retourner le buffer original sans watermark
