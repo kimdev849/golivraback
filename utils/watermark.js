@@ -28,8 +28,8 @@ async function addWatermark(inputBuffer, options = {}) {
     const textWidth = wmText.length * wmFontSize * 0.62;
     const paddingX = 10;
     const paddingY = 6;
-    const boxWidth = textWidth + paddingX * 2;
-    const boxHeight = wmFontSize + paddingY * 2;
+    const boxWidth = Math.round(textWidth + paddingX * 2);
+    const boxHeight = Math.round(wmFontSize + paddingY * 2);
 
     const svgWatermark = Buffer.from(`
       <svg width="${boxWidth}" height="${boxHeight}" xmlns="http://www.w3.org/2000/svg">
@@ -42,10 +42,10 @@ async function addWatermark(inputBuffer, options = {}) {
       </svg>
     `);
 
-    // Position : coin bas-droit avec marge
+    // Position : coin bas-droit avec marge (entiers pour Sharp)
     const margin = Math.max(12, Math.round(width / 40));
-    const left = width - boxWidth - margin;
-    const top = height - boxHeight - margin;
+    const left = Math.round(width - boxWidth - margin);
+    const top = Math.round(height - boxHeight - margin);
 
     const watermarked = await image
       .composite([{
