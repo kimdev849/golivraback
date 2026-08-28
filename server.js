@@ -25,6 +25,7 @@ const zonesRoutes = require('./routes/zones.routes');
 const locationRoutes = require('./routes/location.routes');
 const promoRoutes = require('./routes/promo.routes');
 const campaignsRoutes = require('./routes/campaigns.routes');
+const imageRoutes = require('./routes/image.routes');
 const observabilityRoutes = require('./routes/observability.routes');
 const observabilityAdminRoutes = require('./routes/observability-admin.routes');
 const usageAdminRoutes = require('./routes/usage-admin.routes');
@@ -49,9 +50,34 @@ if (process.env.NODE_ENV === 'production') {
 app.use(
   helmet({
     crossOriginResourcePolicy: { policy: 'cross-origin' },
-    contentSecurityPolicy: false,
+    // CSP adapté GoLivra : images inline (data:), scripts inline (SSR initializer),
+    // et connect only vers l'API backend + Supabase storage. Le CDN Supabase
+    // et les images blob sont couverts par img-src 'self' data: blob:.
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'", "'unsafe-inline'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", 'data:', 'blob:', 'https://*.supabase.co', 'https://*.onrender.com'],
+        connectSrc: ["'self'", 'https://*.supabase.co', 'https://*.onrender.com'],
+        fontSrc: ["'self'", 'data:'],
+        objectSrc: ["'none'"],
+        frameAncestors: ["'none'"],
+        baseUri: ["'self'"],
+        formAction: ["'self'"],
+      },
+    },
+    crossOriginEmbedderPolicy: false,
+    // Pas de policy CSP côté API (API JSON only, pas de HTML)
   }),
 );
+// Headers API non couverts par helmet (API JSON) : Referrer-Policy et
+// X-Content-Type-Options pour la homogénéité web/API (F-SEC-03).
+app.use((_req, res, next) => {
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  next();
+});
 
 function isLocalDevOrigin(origin) {
   return /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(origin);
@@ -132,23 +158,30 @@ const generalLimiter = rateLimit({
 
 const otpLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: isDev ? 0 : (Number(process.env.RATE_LIMIT_OTP_MAX) || 50),
+  max: isDev ? 0 : (Number(process.env.RATE_LIMIT_OTP_MAX) || 10),
   standardHeaders: true,
   legacyHeaders: false,
   skip: () => isDev,
   message: { message: 'Trop de demandes OTP, réessayez plus tard.', code: 'RATE_LIMIT_OTP' },
 });
 
-// Anti brute force connexion : 30 tentatives / 15 min par IP (configurable
-// via RATE_LIMIT_LOGIN_MAX). Complète le limiteur OTP — l'authentification
-// (client + staff) ne doit pas être testable à l'infini.
+// Anti brute force connexion : 5 tentatives / 15 min par IP (configurable
+// via RATE_LIMIT_LOGIN_MAX). Le seuil est volontairement bas pour bloquer
+// le brute force (F-SEC-01 audit MVP).
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: isDev ? 0 : (Number(process.env.RATE_LIMIT_LOGIN_MAX) || 30),
+  max: isDev ? 0 : (Number(process.env.RATE_LIMIT_LOGIN_MAX) || 5),
   standardHeaders: true,
   legacyHeaders: false,
   skip: () => isDev,
   message: { message: 'Trop de tentatives de connexion, réessayez plus tard.', code: 'RATE_LIMIT_LOGIN' },
+  handler: (_req, res) => {
+    res.status(429).json({
+      message: 'Trop de tentatives de connexion. Réessayez dans 15 minutes.',
+      code: 'RATE_LIMIT_LOGIN',
+      retryAfter: 900,
+    });
+  },
 });
 
 // N'appliquer le limiter global qu'en production
@@ -168,6 +201,7 @@ app.use('/api/orders', orderRoutes);
 app.use('/api/delivery', deliveryRoutes);
 app.use('/api/enterprises', enterpriseRoutes);
 app.use('/api/products', productRoutes);
+app.use('/api/images', imageRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/logistics', logisticsRoutes);
 app.use('/api/uploads', uploadRoutes);

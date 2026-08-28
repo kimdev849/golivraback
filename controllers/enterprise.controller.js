@@ -19,6 +19,7 @@ function initialModerationStatus() {
   return MODERATION.EN_ATTENTE;
 }
 
+/** DTO public — exclut proprietaire_id et internal fields (F-SEC-04). */
 function mapRestaurant(r, categorieNom) {
   return {
     id: r.id,
@@ -36,12 +37,11 @@ function mapRestaurant(r, categorieNom) {
     longitude: r.longitude,
     statut_moderation: r.statut,
     ouvert: r.est_ouvert,
-    proprietaire_id: r.proprietaire_id,
     categorie_id: r.categorie_id,
     categorie_nom: categorieNom ?? null,
     image_url: resolveStoredImage(r.logo_url, r.logo, r.logo_mime),
     delai_preparation_min: r.delai_preparation_min ?? 20,
-      livraison_propre: false,
+    livraison_propre: false,
     frais_livraison: Number(r.frais_livraison ?? 1000),
     note_moyenne: r.note_moyenne != null ? Number(r.note_moyenne) : 0,
     nb_avis: r.nb_avis != null ? Number(r.nb_avis) : 0,
@@ -49,6 +49,7 @@ function mapRestaurant(r, categorieNom) {
   };
 }
 
+/** DTO public — exclut proprietaire_id et internal fields (F-SEC-04). */
 function mapBoutique(b, categorieNom) {
   return {
     id: b.id,
@@ -66,7 +67,6 @@ function mapBoutique(b, categorieNom) {
     longitude: b.longitude,
     statut_moderation: b.statut,
     ouvert: b.est_ouvert,
-    proprietaire_id: b.proprietaire_id,
     categorie_id: b.categorie_id,
     categorie_nom: categorieNom ?? null,
     image_url: resolveStoredImage(b.logo_url, b.logo, b.logo_mime),

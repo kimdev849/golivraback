@@ -215,7 +215,7 @@ function parseImagesUrls(imagesUrls, imageUrl) {
     // If main image is already in gallery (but not at index 0), it's a duplicate entry
     const existingIndex = list.indexOf(main);
     if (existingIndex > 0) {
-      throw createHttpError(400, 'L’image principale est déjà présente dans la galerie. Évitez les doublons.');
+      throw createHttpError(400, 'L\u2019image principale est déjà présente dans la galerie. Évitez les doublons.');
     }
     if (existingIndex === -1) {
       list.unshift(main);
@@ -229,6 +229,27 @@ function parseImagesUrls(imagesUrls, imageUrl) {
   return list;
 }
 
+/**
+ * Compute the best image URL for a product in the feed (resolveBytea=false).
+ * Uses image_url (HTTP) if available, otherwise generates the /api/images
+ * endpoint URL when we know the product has an image (image_mime or image
+ * column present).
+ *
+ * We check `image_mime` as a lightweight TEXT flag — Supabase always returns
+ * TEXT columns even when bytea is dropped. If image_mime is truthy, we know
+ * an image EXISTS and the endpoint can serve it.
+ */
+function feedImageUrl(p) {
+  const explicit = p.image_url ?? null;
+  if (explicit) return explicit;
+  // Generate endpoint URL only if we know the product has an image.
+  // image_mime is a small TEXT column that Supabase PostgREST always returns.
+  if ((p.image_mime || p.image) && p.id) {
+    return `/api/images/products/${p.id}`;
+  }
+  return null;
+}
+
 function mapPlatToProduct(p, enterpriseId, categoryNames, resolveBytea = true) {
   let stock = null;
   if (p.stock !== null && p.stock !== undefined) stock = Math.max(0, Number(p.stock));
@@ -237,14 +258,7 @@ function mapPlatToProduct(p, enterpriseId, categoryNames, resolveBytea = true) {
   if (resolveBytea) {
     imageUrl = resolveStoredImage(p.image_url, p.image, p.image_mime);
   } else {
-    imageUrl = p.image_url ?? null;
-    // If no HTTP URL, generate the image endpoint URL so the web frontend
-    // can resolve it. The /api/images/products/:id endpoint serves bytea
-    // images or redirects to HTTP URLs, and returns 404 for products
-    // without any image (frontend handles this via onError fallback).
-    if (!imageUrl && p.id) {
-      imageUrl = `/api/images/products/${p.id}`;
-    }
+    imageUrl = feedImageUrl(p);
   }
   return {
     id: p.id,
@@ -278,14 +292,7 @@ function mapArticleToProduct(a, enterpriseId, categoryNames, resolveBytea = true
   if (resolveBytea) {
     imageUrl = resolveStoredImage(a.image_url, a.image, a.image_mime);
   } else {
-    imageUrl = a.image_url ?? null;
-    // If no HTTP URL, generate the image endpoint URL so the web frontend
-    // can resolve it. The /api/images/products/:id endpoint serves bytea
-    // images or redirects to HTTP URLs, and returns 404 for products
-    // without any image (frontend handles this via onError fallback).
-    if (!imageUrl && a.id) {
-      imageUrl = `/api/images/products/${a.id}`;
-    }
+    imageUrl = feedImageUrl(a);
   }
   return {
     id: a.id,
@@ -421,7 +428,7 @@ async function insertArticleRow(db, row) {
     delete payload[missing];
     removed.add(missing);
   }
-  throw createHttpError(500, 'Impossible d’enregistrer l’article.');
+  throw createHttpError(500, 'Impossible d\u2019enregistrer l\u2019article.');
 }
 
 async function insertPlatRow(db, row) {
@@ -439,7 +446,7 @@ async function insertPlatRow(db, row) {
     delete payload[missing];
     removed.add(missing);
   }
-  throw createHttpError(500, 'Impossible d’enregistrer le plat.');
+  throw createHttpError(500, 'Impossible d\u2019enregistrer le plat.');
 }
 
 async function updatePlatRow(db, productId, patch) {
@@ -475,7 +482,7 @@ async function updateArticleRow(db, productId, patch) {
     delete payload[missing];
     removed.add(missing);
   }
-  throw createHttpError(500, 'Impossible de mettre à jour l’article.');
+  throw createHttpError(500, 'Impossible de mettre à jour l\u2019article.');
 }
 
 async function findProductInEstablishment(db, kind, enterpriseId, productId) {
