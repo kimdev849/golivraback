@@ -233,6 +233,19 @@ function mapPlatToProduct(p, enterpriseId, categoryNames, resolveBytea = true) {
   let stock = null;
   if (p.stock !== null && p.stock !== undefined) stock = Math.max(0, Number(p.stock));
   if (p.est_disponible === false) stock = 0;
+  let imageUrl;
+  if (resolveBytea) {
+    imageUrl = resolveStoredImage(p.image_url, p.image, p.image_mime);
+  } else {
+    imageUrl = p.image_url ?? null;
+    // If no URL but a stored image exists, generate the image endpoint URL.
+    // We check image_mime (small TEXT column always returned by Supabase)
+    // instead of image (bytea) which may be silently excluded from select('*')
+    // on large feed queries.
+    if (!imageUrl && (p.image || p.image_mime) && p.id) {
+      imageUrl = `/api/images/products/${p.id}`;
+    }
+  }
   return {
     id: p.id,
     entreprise_id: enterpriseId,
@@ -246,7 +259,7 @@ function mapPlatToProduct(p, enterpriseId, categoryNames, resolveBytea = true) {
     stock_illimite: p.stock === null || p.stock === undefined,
     est_disponible: p.est_disponible !== false,
     est_en_vedette: p.est_en_vedette === true,
-    image_url: resolveBytea ? resolveStoredImage(p.image_url, p.image, p.image_mime) : p.image_url ?? null,
+    image_url: imageUrl,
     images_urls: normalizeImagesUrls(p.images_urls),
     categorie_id: p.categorie_id ?? null,
     categorie_nom: p.categorie_id && categoryNames ? categoryNames.get(p.categorie_id) ?? null : null,
@@ -254,9 +267,6 @@ function mapPlatToProduct(p, enterpriseId, categoryNames, resolveBytea = true) {
     allergenes: Array.isArray(p.allergenes) ? p.allergenes : [],
     kind: 'plat',
     options: p.options ?? null,
-    nb_vues: Number(p.nb_vues ?? 0),
-    nb_clics: Number(p.nb_clics ?? 0),
-    nb_ventes: Number(p.nb_ventes ?? 0),
   };
 }
 
@@ -264,6 +274,19 @@ function mapArticleToProduct(a, enterpriseId, categoryNames, resolveBytea = true
   let stock = null;
   if (a.stock !== null && a.stock !== undefined) stock = Math.max(0, Number(a.stock));
   if (!a.est_disponible) stock = 0;
+  let imageUrl;
+  if (resolveBytea) {
+    imageUrl = resolveStoredImage(a.image_url, a.image, a.image_mime);
+  } else {
+    imageUrl = a.image_url ?? null;
+    // If no URL but a stored image exists, generate the image endpoint URL.
+    // We check image_mime (small TEXT column always returned by Supabase)
+    // instead of image (bytea) which may be silently excluded from select('*')
+    // on large feed queries.
+    if (!imageUrl && (a.image || a.image_mime) && a.id) {
+      imageUrl = `/api/images/products/${a.id}`;
+    }
+  }
   return {
     id: a.id,
     entreprise_id: enterpriseId,
@@ -277,7 +300,7 @@ function mapArticleToProduct(a, enterpriseId, categoryNames, resolveBytea = true
     stock_illimite: a.stock === null || a.stock === undefined,
     est_disponible: a.est_disponible !== false,
     est_en_vedette: a.est_en_vedette === true,
-    image_url: resolveBytea ? resolveStoredImage(a.image_url, a.image, a.image_mime) : a.image_url ?? null,
+    image_url: imageUrl,
     images_urls: normalizeImagesUrls(a.images_urls),
     kind: 'article',
     options: a.options ?? null,
@@ -291,9 +314,6 @@ function mapArticleToProduct(a, enterpriseId, categoryNames, resolveBytea = true
     marque: a.marque ?? null,
     poids_kg: a.poids_kg != null ? Number(a.poids_kg) : null,
     dimensions: a.dimensions ?? null,
-    nb_vues: Number(a.nb_vues ?? 0),
-    nb_clics: Number(a.nb_clics ?? 0),
-    nb_ventes: Number(a.nb_ventes ?? 0),
   };
 }
 
