@@ -238,11 +238,11 @@ function mapPlatToProduct(p, enterpriseId, categoryNames, resolveBytea = true) {
     imageUrl = resolveStoredImage(p.image_url, p.image, p.image_mime);
   } else {
     imageUrl = p.image_url ?? null;
-    // If no URL but a stored image exists, generate the image endpoint URL.
-    // We check image_mime (small TEXT column always returned by Supabase)
-    // instead of image (bytea) which may be silently excluded from select('*')
-    // on large feed queries.
-    if (!imageUrl && (p.image || p.image_mime) && p.id) {
+    // If no HTTP URL, generate the image endpoint URL so the web frontend
+    // can resolve it. The /api/images/products/:id endpoint serves bytea
+    // images or redirects to HTTP URLs, and returns 404 for products
+    // without any image (frontend handles this via onError fallback).
+    if (!imageUrl && p.id) {
       imageUrl = `/api/images/products/${p.id}`;
     }
   }
@@ -279,11 +279,11 @@ function mapArticleToProduct(a, enterpriseId, categoryNames, resolveBytea = true
     imageUrl = resolveStoredImage(a.image_url, a.image, a.image_mime);
   } else {
     imageUrl = a.image_url ?? null;
-    // If no URL but a stored image exists, generate the image endpoint URL.
-    // We check image_mime (small TEXT column always returned by Supabase)
-    // instead of image (bytea) which may be silently excluded from select('*')
-    // on large feed queries.
-    if (!imageUrl && (a.image || a.image_mime) && a.id) {
+    // If no HTTP URL, generate the image endpoint URL so the web frontend
+    // can resolve it. The /api/images/products/:id endpoint serves bytea
+    // images or redirects to HTTP URLs, and returns 404 for products
+    // without any image (frontend handles this via onError fallback).
+    if (!imageUrl && a.id) {
       imageUrl = `/api/images/products/${a.id}`;
     }
   }
