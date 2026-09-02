@@ -63,11 +63,23 @@ function normalizeRows(rows) {
  * et les accesseurs de date lisent l'heure de Brazzaville.
  */
 function nowInBrazzaville(now) {
-  // getTimezoneOffset() = minutes à soustraire de l'heure locale pour UTC.
-  // Brazzaville = UTC+1 → décalage cible de +60 min ; on décale le timestamp
-  // de (60 + getTimezoneOffset()) minutes pour aligner les accesseurs locaux.
-  const offsetDiffMin = 60 + now.getTimezoneOffset();
-  return new Date(now.getTime() + offsetDiffMin * 60_000);
+  // Convertit une Date (peu importe le fuseau) en heure de Brazzaville (UTC+1).
+  // Utilise les méthodes UTC pour éviter les bugs liés à getTimezoneOffset()
+  // sur certains serveurs/node où la valeur peut être incorrecte.
+  const utcMs = now.getTime();
+  const brazzaMs = utcMs + 1 * 60 * 60_000; // +1 h pour UTC+1
+  const tmp = new Date(brazzaMs);
+  // On construit une Date « locale » avec les composantes UTC de tmp :
+  // getHours() / getDay() liront alors l'heure de Brazzaville.
+  return new Date(
+    tmp.getUTCFullYear(),
+    tmp.getUTCMonth(),
+    tmp.getUTCDate(),
+    tmp.getUTCHours(),
+    tmp.getUTCMinutes(),
+    tmp.getUTCSeconds(),
+    tmp.getUTCMilliseconds(),
+  );
 }
 
 /** Lit les horaires d'un établissement (restaurant ou boutique). */
