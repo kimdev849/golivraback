@@ -325,7 +325,10 @@ async function register(req, res, next) {
       mot_de_passe_hash: hashedPassword,
       role_id: roleRow.id,
       est_verifie: true,
-      est_approuve: role === 'client',
+      // Tous les comptes sont actifs dès l'inscription. Le commerce
+      // (entreprise) peut être en attente de modération, mais le compte
+      // vendeur doit être accessible immédiatement.
+      est_approuve: true,
       avatar_url: avatarUrl,
     });
 
@@ -488,7 +491,10 @@ async function registerVendor(req, res, next) {
       mot_de_passe_hash: hashedPassword,
       role_id: roleRow.id,
       est_verifie: true,
-      est_approuve: false, // les marchands sont toujours en attente de modération
+      // Le compte vendeur est actif dès l'inscription. Le commerce
+      // (entreprise) peut être en attente de modération, mais le
+      // vendeur doit pouvoir accéder à son espace immédiatement.
+      est_approuve: true,
       avatar_url: avatarUrl,
     });
 
