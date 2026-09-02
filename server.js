@@ -275,6 +275,7 @@ app.use((err, req, res, _next) => {
   res.status(status).json({
     message,
     code,
+    ...(err?.field ? { field: err.field } : {}),
     ...(normalized.details ? { details: normalized.details } : {}),
     requestId: req.requestId || null,
   });
